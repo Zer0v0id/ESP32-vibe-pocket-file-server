@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vibe Pocket File Server</title>
+  <style>
+    body { font-family: sans-serif; margin: 1rem; background: #1a1a2e; color: #eee; }
+    h1 { color: #0f3460; }
+    a { color: #e94560; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    th, td { border: 1px solid #333; padding: 0.5rem; text-align: left; }
+    th { background: #16213e; }
+    .dir { font-weight: bold; }
+    .del { color: #e94560; cursor: pointer; }
+    form { margin: 1rem 0; }
+    input[type=file], button { padding: 0.5rem; }
+    button { background: #0f3460; color: #fff; border: none; cursor: pointer; border-radius: 4px; }
+    .path { color: #888; margin: 0.5rem 0; }
+    #progressWrap { display: none; margin: 1rem 0; }
+    #progressWrap.visible { display: block; }
+    #progressTrack { background: #333; height: 22px; border-radius: 4px; overflow: hidden; }
+    #progressBar { background: #e94560; height: 100%; width: 0%; transition: width 0.15s ease; }
+    #progressPct { margin: 0.25rem 0 0; color: #888; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>Vibe Pocket File Server</h1>
+  <form id="upform">
+    Upload: <input type="file" name="file" id="file" required>
+    <button type="submit">Upload</button>
+  </form>
+  <div id="progressWrap">
+    <div id="progressTrack"><div id="progressBar"></div></div>
+    <p id="progressPct">0%</p>
+  </div>
+  <script>
+    document.getElementById('upform').onsubmit = function(e) {
+      e.preventDefault();
+      var f = document.getElementById('file').files[0];
+      if (!f) return;
+      var wrap = document.getElementById('progressWrap');
+      var bar = document.getElementById('progressBar');
+      var pct = document.getElementById('progressPct');
+      wrap.classList.add('visible');
+      bar.style.width = '0%';
+      pct.textContent = '0%';
+      var xhr = new XMLHttpRequest();
+      xhr.upload.onprogress = function(ev) {
+        if (ev.lengthComputable) {
+          var n = Math.round(100 * ev.loaded / ev.total);
+          bar.style.width = n + '%';
+          pct.textContent = n + '%';
+        }
+      };
+      xhr.onload = function() {
+        if (xhr.status >= 200 && xhr.status < 300) window.location.replace('/');
+        else { wrap.classList.remove('visible'); alert('Error: ' + xhr.responseText); }
+      };
+      xhr.onerror = function() { wrap.classList.remove('visible'); alert('Upload failed'); };
+      xhr.open('POST', '/upload/' + encodeURIComponent(f.name));
+      xhr.send(f);
+    };
+  </script>
+  <p class="path">Path: {{CURRENT_PATH}}</p>
+  <form method="POST" action="/mkdir">
+    <input type="hidden" name="path" value="{{CURRENT_PATH_VALUE}}">
+    New folder: <input type="text" name="name" required placeholder="Folder name">
+    <button type="submit">Create</button>
+  </form>
+  <table>
+    <tr><th>Name</th><th>Type</th><th>Size</th><th></th></tr>
+    {{FILE_LIST}}
+  </table>
+</body>
+</html>
