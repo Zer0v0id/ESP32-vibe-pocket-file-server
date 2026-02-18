@@ -1,0 +1,11 @@
+# Vibe Pocket File Server - ESP32-S3 only
+
+menu "Board configuration"
+
+config BOARD_ESP32S3
+    bool
+    default y
+    help
+        ESP32-S3 with SD card on SPI (MISO=12, MOSI=11, SCK=13, CS=5).
+
+endmenu
