@@ -9,6 +9,7 @@
  */
 
 #include <string.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <stdio.h>
@@ -413,11 +414,31 @@ static const char *path_to_breadcrumb_html(const char *uri_path)
     return s_breadcrumb_buf;
 }
 
+/* Directory entry for sorting */
+typedef struct {
+    char name[256];
+    char path[FILE_PATH_MAX];
+    char size[24];
+    uint8_t is_dir;
+    long file_size;
+} dir_entry_t;
+
+/* Compare function for qsort: directories first, then alphabetically */
+static int compare_entries(const void *a, const void *b)
+{
+    const dir_entry_t *ea = (const dir_entry_t *)a;
+    const dir_entry_t *eb = (const dir_entry_t *)b;
+    
+    if (ea->is_dir != eb->is_dir)
+        return eb->is_dir - ea->is_dir;
+    
+    return strcasecmp(ea->name, eb->name);
+}
+
 /* Send only the <tr>...</tr> rows for the directory listing. */
 static esp_err_t send_dir_rows(httpd_req_t *req, const char *dirpath, const char *base_path)
 {
     char entrypath[FILE_PATH_MAX];
-    char entrysize[24];
     char uri_esc[FILE_PATH_MAX];
     size_t dirpath_len = strlen(dirpath);
     struct dirent *entry;
@@ -427,8 +448,32 @@ static esp_err_t send_dir_rows(httpd_req_t *req, const char *dirpath, const char
     strncpy(entrypath, dirpath, sizeof(entrypath) - 1);
     entrypath[sizeof(entrypath) - 1] = '\0';
 
+    dir_entry_t *entries = NULL;
+    size_t entry_count = 0;
+    size_t entry_capacity = 32;
+    entries = malloc(entry_capacity * sizeof(dir_entry_t));
+    if (!entries) {
+        closedir(dir);
+        return ESP_FAIL;
+    }
+
     while ((entry = readdir(dir)) != NULL) {
-        const char *entrytype = (entry->d_type == DT_DIR) ? "directory" : "file";
+        if (entry_count >= entry_capacity) {
+            entry_capacity *= 2;
+            dir_entry_t *new_entries = realloc(entries, entry_capacity * sizeof(dir_entry_t));
+            if (!new_entries) {
+                free(entries);
+                closedir(dir);
+                return ESP_FAIL;
+            }
+            entries = new_entries;
+        }
+        
+        dir_entry_t *e = &entries[entry_count];
+        strncpy(e->name, entry->d_name, sizeof(e->name) - 1);
+        e->name[sizeof(e->name) - 1] = '\0';
+        e->is_dir = (entry->d_type == DT_DIR);
+        
         if (dirpath_len + strlen(entry->d_name) + 2 > (size_t)FILE_PATH_MAX) continue;
         strcpy(entrypath + dirpath_len, entry->d_name);
         if (entry->d_type == DT_DIR) {
@@ -436,40 +481,53 @@ static esp_err_t send_dir_rows(httpd_req_t *req, const char *dirpath, const char
             if (n + 1 < sizeof(entrypath)) { entrypath[n] = '/'; entrypath[n + 1] = '\0'; }
         }
         if (stat(entrypath, &entry_stat) != 0) continue;
-        snprintf(entrysize, sizeof(entrysize), "%ld", (long)entry_stat.st_size);
-        const char *uri = entrypath + strlen(base_path);
+        
+        strncpy(e->path, entrypath, sizeof(e->path) - 1);
+        e->path[sizeof(e->path) - 1] = '\0';
+        e->file_size = (long)entry_stat.st_size;
+        snprintf(e->size, sizeof(e->size), "%ld", e->file_size);
+        
+        entry_count++;
+    }
+    closedir(dir);
+
+    qsort(entries, entry_count, sizeof(dir_entry_t), compare_entries);
+
+    for (size_t i = 0; i < entry_count; i++) {
+        dir_entry_t *e = &entries[i];
+        const char *entrytype = e->is_dir ? "directory" : "file";
+        const char *uri = e->path + strlen(base_path);
         html_escape_attr(uri, uri_esc, sizeof(uri_esc));
-        if (httpd_resp_sendstr_chunk(req, "<tr><td class=\"") != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, entry->d_type == DT_DIR ? "dir\">" : "\">") != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, "<a href=\"") != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, uri) != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, "\">") != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, entry->d_name) != ESP_OK ||
-            (entry->d_type == DT_DIR && httpd_resp_sendstr_chunk(req, "/") != ESP_OK) ||
-            httpd_resp_sendstr_chunk(req, "</a></td><td>") != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, entrytype) != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, "</td><td>") != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, entrysize) != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, "</td><td><form style=\"display:inline\" method=\"POST\" action=\"/rename\"><input type=\"hidden\" name=\"path\" value=\"") != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, uri_esc) != ESP_OK ||
-            httpd_resp_sendstr_chunk(req, "\"><input type=\"text\" name=\"name\" placeholder=\"new name\" size=\"10\"><button type=\"submit\">Rename</button></form></td><td>") != ESP_OK) {
-            closedir(dir);
-            return ESP_FAIL;
+        
+        esp_err_t ret = ESP_OK;
+        ret |= httpd_resp_sendstr_chunk(req, "<tr><td class=\"");
+        ret |= httpd_resp_sendstr_chunk(req, e->is_dir ? "dir\">" : "\">");
+        ret |= httpd_resp_sendstr_chunk(req, "<a href=\"");
+        ret |= httpd_resp_sendstr_chunk(req, uri);
+        ret |= httpd_resp_sendstr_chunk(req, "\">");
+        ret |= httpd_resp_sendstr_chunk(req, e->name);
+        if (e->is_dir) ret |= httpd_resp_sendstr_chunk(req, "/");
+        ret |= httpd_resp_sendstr_chunk(req, "</a></td><td>");
+        ret |= httpd_resp_sendstr_chunk(req, entrytype);
+        ret |= httpd_resp_sendstr_chunk(req, "</td><td>");
+        ret |= httpd_resp_sendstr_chunk(req, e->size);
+        ret |= httpd_resp_sendstr_chunk(req, "</td><td><form style=\"display:inline\" method=\"POST\" action=\"/rename\"><input type=\"hidden\" name=\"path\" value=\"");
+        ret |= httpd_resp_sendstr_chunk(req, uri_esc);
+        ret |= httpd_resp_sendstr_chunk(req, "\"><input type=\"text\" name=\"name\" placeholder=\"new name\" size=\"10\"><button type=\"submit\">Rename</button></form></td><td>");
+        
+        if (!e->is_dir) {
+            ret |= httpd_resp_sendstr_chunk(req, "<form style=\"display:inline\" method=\"POST\" action=\"/delete");
+            ret |= httpd_resp_sendstr_chunk(req, uri);
+            ret |= httpd_resp_sendstr_chunk(req, "\"><button class=\"del\" type=\"submit\">Delete</button></form>");
         }
-        if (entry->d_type != DT_DIR) {
-            if (httpd_resp_sendstr_chunk(req, "<form style=\"display:inline\" method=\"POST\" action=\"/delete") != ESP_OK ||
-                httpd_resp_sendstr_chunk(req, uri) != ESP_OK ||
-                httpd_resp_sendstr_chunk(req, "\"><button class=\"del\" type=\"submit\">Delete</button></form>") != ESP_OK) {
-                closedir(dir);
-                return ESP_FAIL;
-            }
-        }
-        if (httpd_resp_sendstr_chunk(req, "</td></tr>\n") != ESP_OK) {
-            closedir(dir);
+        ret |= httpd_resp_sendstr_chunk(req, "</td></tr>\n");
+        
+        if (ret != ESP_OK) {
+            free(entries);
             return ESP_FAIL;
         }
     }
-    closedir(dir);
+    free(entries);
     return ESP_OK;
 }
 
@@ -649,6 +707,14 @@ static esp_err_t sdcard_mount(void)
 /* ========== HTTP helpers ========== */
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
+/* Add basic security headers to HTTP response */
+static void add_security_headers(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+    httpd_resp_set_hdr(req, "X-Frame-Options", "SAMEORIGIN");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+}
+
 /* Decode %XX to bytes in place. */
 static void uri_decode_in_place(char *s)
 {
@@ -746,6 +812,7 @@ static esp_err_t set_content_type_from_file(httpd_req_t *req, const char *filena
 /* Send directory listing HTML. Uses /sdcard/www/index.html if present and contains {{FILE_LIST}}. */
 static esp_err_t http_resp_dir_html(httpd_req_t *req, const char *dirpath)
 {
+    add_security_headers(req);
     const char *base_path = ((struct file_server_data *)req->user_ctx)->base_path;
     const char *uri_path = dirpath + strlen(base_path);
     if (uri_path[0] == '\0') uri_path = "/";
@@ -1238,6 +1305,7 @@ static void settings_escape_html(const char *src, char *out, size_t out_size)
 
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
+    add_security_headers(req);
     char ssid_esc[64], pass_esc[80], web_esc[40], sta_ssid_esc[64], sta_pass_esc[80];
     settings_escape_html(s_config.wifi_ssid, ssid_esc, sizeof(ssid_esc));
     settings_escape_html(s_config.wifi_pass, pass_esc, sizeof(pass_esc));
@@ -1317,6 +1385,7 @@ static void delayed_reboot_task(void *pv)
 
 static esp_err_t status_get_handler(httpd_req_t *req)
 {
+    add_security_headers(req);
     int64_t uptime_us = (int64_t)esp_timer_get_time();
     unsigned int uptime_sec = (unsigned int)(uptime_us / 1000000);
     unsigned int days = uptime_sec / 86400;

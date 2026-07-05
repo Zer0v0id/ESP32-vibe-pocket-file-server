@@ -163,6 +163,12 @@ If the SD card fails to mount (wrong wiring, bad card, or no card), the HTTP ser
 The server uses chunked transfer for large files to limit RAM use; filenames with spaces or special characters are supported (URL-encoded by the browser and sanitized for FAT).
 ​
 
+Files and folders in directory listings are sorted alphabetically with directories appearing first for easier navigation.
+​
+
+Security headers (X-Content-Type-Options, X-Frame-Options, Cache-Control) are included in HTTP responses for improved security.
+​
+
 Troubleshooting
 Build fails at sections.ld / ldgen (for example error code -1073741819 on Windows)
 This usually means the linker script generator (ldgen.py) crashed (access violation) or hit a Python/pyparsing error. Try:

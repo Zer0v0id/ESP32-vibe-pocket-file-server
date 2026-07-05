@@ -1,0 +1,36 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Source code
+*.c text
+*.h text
+*.py text
+*.md text
+*.txt text
+*.cmake text
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf
+
+# Documentation
+*.md text
+LICENSE text
+README text
+
+# Graphics
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# Archives
+*.zip binary
+*.gz binary
+*.tar binary
+*.rar binary
+
+# ESP-IDF specific
+sdkconfig.defaults text
+CMakeLists.txt text
+Kconfig text
