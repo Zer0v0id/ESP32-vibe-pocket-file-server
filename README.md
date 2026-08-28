@@ -61,6 +61,9 @@ ESP32-S3 (any module with Wi‑Fi support).
 microSD card (formatted FAT32) and a microSD SPI breakout.
 ​
 
+Optional: SSD1306 OLED display (128x64, I2C) for status information. See [DISPLAY_WIRING.md](DISPLAY_WIRING.md) for wiring details.
+​
+
 Wiring (SPI) — ESP32-S3
 SD breakout	ESP32-S3
 GND	GND
