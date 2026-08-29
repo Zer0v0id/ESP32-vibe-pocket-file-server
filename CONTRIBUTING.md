@@ -19,6 +19,7 @@ Thank you for your interest in contributing to the Vibe Pocket File Server proje
 - ESP32-S3 development board
 - microSD card (FAT32 formatted)
 - microSD SPI breakout module
+- Optional: SSD1306 128x64 OLED (I2C) for the with-display firmware
 
 ### Building
 
@@ -27,14 +28,15 @@ Thank you for your interest in contributing to the Vibe Pocket File Server proje
 source $IDF_PATH/export.sh  # Linux/macOS
 # or use ESP-IDF PowerShell on Windows
 
-# Set target
+# Without display (default)
 idf.py set-target esp32s3
-
-# Build
 idf.py build
-
-# Flash
 idf.py -p <PORT> flash monitor
+
+# With SSD1306 OLED
+idf.py -B build-display -DWITH_DISPLAY=ON set-target esp32s3
+idf.py -B build-display -DWITH_DISPLAY=ON build
+idf.py -B build-display -p <PORT> flash monitor
 ```
 
 ## Code Style Guidelines

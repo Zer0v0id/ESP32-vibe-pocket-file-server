@@ -54,11 +54,17 @@ Rename – Rename files and folders from the file list by entering a new name an
 SD space in UI – The file browser shows SD: X MB free / Y MB (or “not mounted”) above the file table.
 ​
 
+Optional OLED – Build with or without an SSD1306 128×64 I2C status display. Default firmware has no display driver; the OLED variant shows SSID, IP, SD status, and URL. See Firmware variants.
+​
+
 Hardware
 ESP32-S3 (any module with Wi‑Fi support).
 ​
 
 microSD card (formatted FAT32) and a microSD SPI breakout.
+​
+
+Optional SSD1306 OLED (128×64, I2C) for on-device status. The default firmware is **without display**. See [Firmware variants](#firmware-variants) and [DISPLAY_WIRING.md](DISPLAY_WIRING.md).
 ​
 
 Wiring (SPI) — ESP32-S3
@@ -71,6 +77,38 @@ SCK / CLK	GPIO 13
 CS	GPIO 5
 Pins are set in main/main.c; change PIN_NUM_* if your board uses different pins.
 ​
+
+Optional OLED (I2C) — ESP32-S3
+SSD1306	ESP32-S3
+GND	GND
+VCC	3.3V
+SDA	GPIO 8
+SCL / SCK	GPIO 9
+Used only by the with-display firmware. Change pins in `idf.py menuconfig` (*Board configuration*).
+​
+
+Firmware variants
+There are two firmware options. The file server is the same in both; only the OLED driver is compiled in or left out.
+
+**Without display (default)** — use this if you have no OLED:
+
+```bash
+idf.py set-target esp32s3
+idf.py build
+idf.py -p <PORT> flash monitor
+```
+
+**With display** — SSD1306 status screen (SSID, IP, SD, URL):
+
+```bash
+idf.py -B build-display -DWITH_DISPLAY=ON set-target esp32s3
+idf.py -B build-display -DWITH_DISPLAY=ON build
+idf.py -B build-display -p <PORT> flash monitor
+```
+
+You can also toggle it in an existing tree with `idf.py menuconfig` → *Board configuration* → *SSD1306 OLED status display (I2C)*. Keep the two CMake build directories if you want both binaries on disk at once.
+
+If you flash the OLED build with no screen attached, the server still starts; the serial log reports that the display was not found.
 
 Build and run
 Install ESP-IDF (version 5.x recommended).
@@ -85,7 +123,7 @@ Windows: Open the “ESP-IDF x.x PowerShell” or “ESP-IDF x.x CMD” shortcut
 Linux / macOS: Run source $IDF_PATH/export.sh (or add it to your shell profile).
 ​
 
-In the project directory (from that same shell), run:
+In the project directory (from that same shell), run the default **without display** build. For the OLED variant, see [Firmware variants](#firmware-variants).
 
 ```bash
 idf.py set-target esp32s3
@@ -101,9 +139,9 @@ Replace `<PORT>` with your serial port (for example COM3 on Windows or /dev/ttyU
 idf.py -DCMAKE_BUILD_TYPE=Release build
 ```
 
-Or use **build-release.bat** (Windows): it activates IDF with the project’s Python env, builds release, then merges bootloader + partition table + app into a single image.
+Or use **build-release.bat** (Windows): it activates IDF with the project’s Python env, builds release, then merges bootloader + partition table + app into a single image. Pass `display` as the first argument for the OLED firmware (`build-release.bat display`).
 
-**Single flash image:** After any build, run `python merge_flash_bin.py` to create `build/vibe_pocket_file_server_flash.bin`. Flash that one file with:
+**Single flash image:** After any build, run `python merge_flash_bin.py` (or `python merge_flash_bin.py build-display` for the OLED variant) to create `vibe_pocket_file_server_flash.bin` in that build folder. Flash that one file with:
 
 ```bash
 esptool.py -p <PORT> write_flash 0x0 build/vibe_pocket_file_server_flash.bin
@@ -115,14 +153,14 @@ Otherwise use `idf.py -p <PORT> flash` to flash the separate binaries.
 Connect your phone or laptop to the device Wi‑Fi (default SSID Vibe Pocket, password esp32files; you can change this at http://192.168.4.1/settings), then open http://192.168.4.1 in a browser.
 ​
 
-Optional: The repo includes build-and-flash.ps1 (PowerShell). Run it from any PowerShell; it prompts for the project directory and (if needed) your ESP-IDF path, removes the build folder, runs idf.py fullclean, sets target to esp32s3, and builds. When the build succeeds, the script tells you which flash command to run (for example idf.py flash or idf.py -p COMx flash).
+Optional: The repo includes build-and-flash.ps1 (PowerShell). Run it from any PowerShell; it prompts for the project directory and (if needed) your ESP-IDF path, removes the build folder, runs idf.py fullclean, sets target to esp32s3, and builds. Add `-WithDisplay` for the OLED firmware. When the build succeeds, the script tells you which flash command to run.
 ​
 
 Configuration
 From the web: Open http://192.168.4.1/settings to change Wi‑Fi SSID, password, AP channel (1–13), max connections (1–10), optional join network (STA SSID and password so the device also connects to your router), theme (Dark / Light), default view (Desktop / Mobile), web root folder name, and max upload size (1–32 MB). Changes are saved to flash and the device reboots after saving so the new Wi‑Fi settings apply.
 ​
 
-In code (for SD pins only; the rest is set in Settings): edit main/main.c and set PIN_NUM_MISO, PIN_NUM_MOSI, PIN_NUM_CLK, and PIN_NUM_CS if your wiring differs.
+In code (for SD pins only; the rest is set in Settings): edit main/main.c and set PIN_NUM_MISO, PIN_NUM_MOSI, PIN_NUM_CLK, and PIN_NUM_CS if your wiring differs. OLED SDA/SCL and I2C address are set in `idf.py menuconfig` when building with display.
 ​
 
 Editing the web UI on the SD card

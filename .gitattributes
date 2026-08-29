@@ -32,5 +32,6 @@ README text
 
 # ESP-IDF specific
 sdkconfig.defaults text
+sdkconfig.defaults.display text
 CMakeLists.txt text
 Kconfig text

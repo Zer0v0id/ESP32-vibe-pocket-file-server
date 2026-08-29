@@ -8,4 +8,46 @@ config BOARD_ESP32S3
     help
         ESP32-S3 with SD card on SPI (MISO=12, MOSI=11, SCK=13, CS=5).
 
+config DISPLAY_SSD1306
+    bool "SSD1306 OLED status display (I2C)"
+    default n
+    help
+        Build firmware that drives an optional 128x64 SSD1306 OLED over I2C.
+        Shows SSID, IP address, SD card status, and the server URL.
+
+        Leave this disabled for boards with no display. The file server
+        is identical either way.
+
+        Enable via: idf.py menuconfig
+        or:         idf.py -B build-display -DWITH_DISPLAY=ON build
+
+        If this is enabled but no OLED is wired, init fails quietly and
+        the web UI still works.
+
+if DISPLAY_SSD1306
+
+config DISPLAY_SSD1306_SDA_GPIO
+    int "I2C SDA GPIO"
+    default 8
+    range 0 48
+    help
+        ESP32-S3 GPIO connected to the OLED SDA pin.
+        Must not overlap SD SPI pins (5, 11, 12, 13).
+
+config DISPLAY_SSD1306_SCL_GPIO
+    int "I2C SCL GPIO"
+    default 9
+    range 0 48
+    help
+        ESP32-S3 GPIO connected to the OLED SCL (SCK) pin.
+        Must not overlap SD SPI pins (5, 11, 12, 13).
+
+config DISPLAY_SSD1306_I2C_ADDR
+    hex "I2C address"
+    default 3C
+    help
+        Most SSD1306 modules use 0x3C. Some use 0x3D.
+
+endif
+
 endmenu

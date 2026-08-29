@@ -9,17 +9,26 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: without-display
+            command: idf.py build
+          - name: with-display
+            command: idf.py -B build-display -DWITH_DISPLAY=ON set-target esp32s3 build
+
+    name: Build (${{ matrix.name }})
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
         submodules: 'recursive'
-    
+
     - name: ESP-IDF Build
       uses: espressif/esp-idf-ci-action@v1
       with:
         esp_idf_version: v5.3
         target: esp32s3
         path: '.'
-        command: idf.py build
+        command: ${{ matrix.command }}

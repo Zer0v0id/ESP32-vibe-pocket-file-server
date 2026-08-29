@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Optional SSD1306 128×64 OLED status display (I2C), selected at build time
+- Firmware variants: default build without display, `-DWITH_DISPLAY=ON` build with display
+- `DISPLAY_WIRING.md` for OLED pinout and troubleshooting
 - File sorting in directory listings (directories first, then alphabetically)
 - Security headers (X-Content-Type-Options, X-Frame-Options, Cache-Control)
 - `.gitattributes` for proper line ending handling
