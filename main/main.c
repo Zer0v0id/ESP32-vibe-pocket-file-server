@@ -32,10 +32,15 @@
 #include "nvs.h"
 #include "driver/spi_common.h"
 #include "display.h"
+#include "status_led.h"
 #include "esp_system.h"
 #include "esp_chip_info.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
+#include "esp_mac.h"
+#include "esp_heap_caps.h"
+#include "sdkconfig.h"
+#include "driver/temperature_sensor.h"
 
 static const char *TAG = "file_server";
 
@@ -61,11 +66,23 @@ static const char *TAG = "file_server";
 #define NVS_KEY_STA_PASS        "sta_pass"
 #define NVS_KEY_THEME           "theme"
 #define NVS_KEY_MOBILE_DEFAULT  "mobile"
+#define NVS_KEY_LED_MODE        "led_mode"
+#define NVS_KEY_DISP_ON         "disp_on"
+#define NVS_KEY_DISP_CON        "disp_con"
+#define NVS_KEY_DISP_INV        "disp_inv"
+#define NVS_KEY_DISP_ROT        "disp_rot"
+#define NVS_KEY_DISP_LINES      "disp_ln"
+#define NVS_KEY_DISP_LAY        "disp_lay"
 
 #define THEME_DARK  0
 #define THEME_LIGHT 1
 #define VIEW_DESKTOP 0
 #define VIEW_MOBILE  1
+#if CONFIG_DISPLAY_SSD1306_128X64
+#define DISPLAY_VISIBLE_LINES 8
+#else
+#define DISPLAY_VISIBLE_LINES 4
+#endif
 
 /* Runtime config (loaded from NVS at boot; editable via /settings) */
 typedef struct {
@@ -79,11 +96,21 @@ typedef struct {
     char sta_pass[65];
     uint8_t theme;           /* THEME_DARK / THEME_LIGHT */
     uint8_t mobile_default;  /* VIEW_DESKTOP / VIEW_MOBILE */
+    uint8_t led_mode;        /* STATUS_LED_MODE_* */
+    uint8_t disp_on;         /* 0=off, 1=on */
+    uint8_t disp_contrast;   /* DISPLAY_CONTRAST_* */
+    uint8_t disp_invert;     /* 0=normal, 1=inverted */
+    uint8_t disp_rotate;     /* 0=normal, 1=180 degrees */
+    uint8_t disp_line[DISPLAY_LINE_MAX];
 } app_config_t;
 
 static app_config_t s_config;
 static char s_sd_web_root[64];  /* SD_MOUNT_POINT "/" web_root_dir */
 uint32_t g_max_file_size;      /* for upload handler */
+static bool s_sd_mounted;
+static unsigned s_sd_file_count;
+static temperature_sensor_handle_t s_tsens;
+static bool s_settings_saved;
 
 /* SD card SPI pins for ESP32-S3. Change in main.c if your wiring differs. */
 #define PIN_NUM_MISO          12
@@ -124,6 +151,19 @@ static void settings_set_defaults(void)
     s_config.sta_pass[0] = '\0';
     s_config.theme = THEME_DARK;
     s_config.mobile_default = VIEW_DESKTOP;
+    s_config.led_mode = STATUS_LED_MODE_DIM_GREEN;
+    s_config.disp_on = 1;
+    s_config.disp_contrast = DISPLAY_CONTRAST_MED;
+    s_config.disp_invert = 0;
+    s_config.disp_rotate = 0;
+    s_config.disp_line[0] = DISP_FIELD_TITLE;
+    s_config.disp_line[1] = DISP_FIELD_SSID;
+    s_config.disp_line[2] = DISP_FIELD_IP;
+    s_config.disp_line[3] = DISP_FIELD_SD;
+    s_config.disp_line[4] = DISP_FIELD_CLIENTS;
+    s_config.disp_line[5] = DISP_FIELD_URL;
+    s_config.disp_line[6] = DISP_FIELD_UPTIME;
+    s_config.disp_line[7] = DISP_FIELD_HEAP;
 }
 
 static void settings_load(void)
@@ -171,6 +211,43 @@ static void settings_load(void)
         s_config.theme = u8;
     if (nvs_get_u8(h, NVS_KEY_MOBILE_DEFAULT, &u8) == ESP_OK && u8 <= VIEW_MOBILE)
         s_config.mobile_default = u8;
+    if (nvs_get_u8(h, NVS_KEY_LED_MODE, &u8) == ESP_OK && u8 <= STATUS_LED_MODE_MAX)
+        s_config.led_mode = u8;
+    if (nvs_get_u8(h, NVS_KEY_DISP_ON, &u8) == ESP_OK && u8 <= 1)
+        s_config.disp_on = u8;
+    if (nvs_get_u8(h, NVS_KEY_DISP_CON, &u8) == ESP_OK && u8 <= DISPLAY_CONTRAST_HIGH)
+        s_config.disp_contrast = u8;
+    if (nvs_get_u8(h, NVS_KEY_DISP_INV, &u8) == ESP_OK && u8 <= 1)
+        s_config.disp_invert = u8;
+    if (nvs_get_u8(h, NVS_KEY_DISP_ROT, &u8) == ESP_OK && u8 <= 1)
+        s_config.disp_rotate = u8;
+    {
+        uint8_t lines[DISPLAY_LINE_MAX];
+        size_t blen = sizeof(lines);
+        if (nvs_get_blob(h, NVS_KEY_DISP_LINES, lines, &blen) == ESP_OK && blen > 0) {
+            if (blen > sizeof(s_config.disp_line)) {
+                blen = sizeof(s_config.disp_line);
+            }
+            memcpy(s_config.disp_line, lines, blen);
+            for (unsigned i = 0; i < DISPLAY_LINE_MAX; i++) {
+                if (s_config.disp_line[i] >= DISP_FIELD_COUNT) {
+                    s_config.disp_line[i] = DISP_FIELD_BLANK;
+                }
+            }
+        } else if (nvs_get_u8(h, NVS_KEY_DISP_LAY, &u8) == ESP_OK) {
+            if (u8 == 1) {
+                s_config.disp_line[0] = DISP_FIELD_SSID;
+                s_config.disp_line[1] = DISP_FIELD_IP;
+                s_config.disp_line[2] = DISP_FIELD_SD;
+                s_config.disp_line[3] = DISP_FIELD_URL;
+            } else if (u8 == 2) {
+                s_config.disp_line[0] = DISP_FIELD_SSID;
+                s_config.disp_line[1] = DISP_FIELD_IP;
+                s_config.disp_line[2] = DISP_FIELD_CLIENTS;
+                s_config.disp_line[3] = DISP_FIELD_SD;
+            }
+        }
+    }
 
     nvs_close(h);
 }
@@ -191,6 +268,16 @@ static esp_err_t settings_save(void)
     nvs_set_str(h, NVS_KEY_STA_PASS, s_config.sta_pass);
     nvs_set_u8(h, NVS_KEY_THEME, s_config.theme);
     nvs_set_u8(h, NVS_KEY_MOBILE_DEFAULT, s_config.mobile_default);
+    nvs_set_u8(h, NVS_KEY_LED_MODE, s_config.led_mode);
+    nvs_set_u8(h, NVS_KEY_DISP_ON, s_config.disp_on);
+    nvs_set_u8(h, NVS_KEY_DISP_CON, s_config.disp_contrast);
+    nvs_set_u8(h, NVS_KEY_DISP_INV, s_config.disp_invert);
+    nvs_set_u8(h, NVS_KEY_DISP_ROT, s_config.disp_rotate);
+    err = nvs_set_blob(h, NVS_KEY_DISP_LINES, s_config.disp_line, sizeof(s_config.disp_line));
+    if (err != ESP_OK) {
+        nvs_close(h);
+        return err;
+    }
     err = nvs_commit(h);
     nvs_close(h);
     return err;
@@ -352,6 +439,399 @@ static void get_sd_space_str(void)
     unsigned long free_mb = (unsigned long)(free_bytes / (1024 * 1024));
     unsigned long total_mb = (unsigned long)(total_bytes / (1024 * 1024));
     snprintf(s_sd_space_str, SD_SPACE_STR_SIZE, "SD: %lu MB free / %lu MB", free_mb, total_mb);
+}
+
+static void format_size_short(uint64_t bytes, char *out, size_t n)
+{
+    const uint64_t kb = 1024, mb = kb * 1024, gb = mb * 1024;
+    if (bytes >= gb) {
+        unsigned whole = (unsigned)(bytes / gb);
+        unsigned frac = (unsigned)((bytes % gb) * 10 / gb);
+        if (whole >= 10 || frac == 0) {
+            snprintf(out, n, "%uG", whole);
+        } else {
+            snprintf(out, n, "%u.%uG", whole, frac);
+        }
+    } else if (bytes >= mb) {
+        snprintf(out, n, "%luM", (unsigned long)(bytes / mb));
+    } else {
+        snprintf(out, n, "%luK", (unsigned long)((bytes + kb - 1) / kb));
+    }
+}
+
+/* Count regular files under path (recursive, depth-limited). */
+static unsigned count_files_recursive(const char *path, int depth)
+{
+    if (depth > 6 || path == NULL) {
+        return 0;
+    }
+    DIR *dir = opendir(path);
+    if (!dir) {
+        return 0;
+    }
+    unsigned n = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.' &&
+            (entry->d_name[1] == '\0' || (entry->d_name[1] == '.' && entry->d_name[2] == '\0'))) {
+            continue;
+        }
+        char *child = malloc(FILE_PATH_MAX);
+        if (!child) {
+            break;
+        }
+        size_t plen = strlen(path);
+        size_t nlen = strlen(entry->d_name);
+        if (plen + nlen + 2 > (size_t)FILE_PATH_MAX) {
+            free(child);
+            continue;
+        }
+        memcpy(child, path, plen);
+        child[plen] = '/';
+        memcpy(child + plen + 1, entry->d_name, nlen + 1);
+        bool is_dir = (entry->d_type == DT_DIR);
+        if (entry->d_type != DT_DIR) {
+            struct stat st;
+            if (stat(child, &st) != 0) {
+                free(child);
+                continue;
+            }
+            is_dir = S_ISDIR(st.st_mode);
+        }
+        if (is_dir) {
+            n += count_files_recursive(child, depth + 1);
+        } else {
+            n++;
+        }
+        free(child);
+        if (n >= 9999) {
+            break;
+        }
+    }
+    closedir(dir);
+    return n;
+}
+
+static void format_sd_display_line(bool mounted, char *out, size_t n)
+{
+    s_sd_file_count = 0;
+    if (!mounted) {
+        snprintf(out, n, "NO CARD");
+        return;
+    }
+    uint64_t total_bytes = 0, free_bytes = 0;
+    if (esp_vfs_fat_info(SD_MOUNT_POINT, &total_bytes, &free_bytes) != ESP_OK) {
+        snprintf(out, n, "NO CARD");
+        return;
+    }
+    char sz[8];
+    format_size_short(total_bytes, sz, sizeof(sz));
+    unsigned files = count_files_recursive(s_sd_web_root, 0);
+    s_sd_file_count = files;
+    snprintf(out, n, "%s %u file%s", sz, files, files == 1 ? "" : "s");
+}
+
+static const char *const k_disp_field_labels[DISP_FIELD_COUNT] = {
+    "Blank",
+    "Title (Vibe Pocket)",
+    "Wi-Fi SSID",
+    "AP IP address",
+    "Server URL",
+    "SD card (size + files)",
+    "SD free space",
+    "SD total size",
+    "File count",
+    "Connected clients",
+    "Clients / max",
+    "Uptime",
+    "Free heap",
+    "Free PSRAM",
+    "Firmware version",
+    "Wi-Fi channel",
+    "STA IP (joined network)",
+    "MAC address",
+    "Chip",
+    "Wi-Fi mode",
+    "Web root folder",
+    "CPU temperature",
+    "Max upload size",
+    "Last reset",
+    "SD mounted",
+    "SSID + channel",
+};
+
+static const char *const k_led_mode_labels[STATUS_LED_MODE_MAX + 1] = {
+    "Off",
+    "Dim green (default)",
+    "Dim blue",
+    "Dim amber",
+    "Breathe green",
+    "Status (SD + clients)",
+    "Dim red",
+    "Dim white",
+    "Dim purple",
+    "Dim cyan",
+    "Dim pink",
+    "Dim yellow",
+    "Breathe blue",
+    "Breathe amber",
+    "Breathe red",
+    "Rainbow",
+    "Heartbeat",
+    "Slow blink",
+    "Fast blink",
+    "Alternate (cyan / magenta)",
+    "Sparkle",
+};
+_Static_assert(sizeof(k_led_mode_labels) / sizeof(k_led_mode_labels[0]) == STATUS_LED_MODE_MAX + 1,
+               "LED mode labels must match STATUS_LED_MODE_MAX");
+
+static const char *reset_reason_short(void)
+{
+    switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power";
+    case ESP_RST_SW:      return "software";
+    case ESP_RST_PANIC:   return "panic";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:     return "watchdog";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_USB:     return "usb";
+    default:              return "reset";
+    }
+}
+
+static void apply_disp_preset(const char *name)
+{
+    if (!name || !name[0]) {
+        return;
+    }
+    const uint8_t *src = NULL;
+    static const uint8_t status[]   = { DISP_FIELD_TITLE, DISP_FIELD_SSID, DISP_FIELD_IP, DISP_FIELD_SD,
+                                        DISP_FIELD_CLIENTS, DISP_FIELD_URL, DISP_FIELD_UPTIME, DISP_FIELD_HEAP };
+    static const uint8_t compact[]  = { DISP_FIELD_SSID, DISP_FIELD_IP, DISP_FIELD_SD, DISP_FIELD_URL,
+                                        DISP_FIELD_CLIENTS, DISP_FIELD_HEAP, DISP_FIELD_CHANNEL, DISP_FIELD_BLANK };
+    static const uint8_t network[]  = { DISP_FIELD_SSID, DISP_FIELD_IP, DISP_FIELD_CLIENTS, DISP_FIELD_SD,
+                                        DISP_FIELD_STA_IP, DISP_FIELD_WIFI_MODE, DISP_FIELD_CHANNEL, DISP_FIELD_MAC };
+    static const uint8_t system[]   = { DISP_FIELD_UPTIME, DISP_FIELD_HEAP, DISP_FIELD_PSRAM, DISP_FIELD_VERSION,
+                                        DISP_FIELD_CHIP, DISP_FIELD_TEMP, DISP_FIELD_RESET, DISP_FIELD_MAC };
+    static const uint8_t storage[]  = { DISP_FIELD_SD, DISP_FIELD_SD_FREE, DISP_FIELD_FILES, DISP_FIELD_CLIENTS,
+                                        DISP_FIELD_WEB_ROOT, DISP_FIELD_MAX_UPLOAD, DISP_FIELD_SD_OK, DISP_FIELD_HEAP };
+    if (strcmp(name, "status") == 0) {
+        src = status;
+    } else if (strcmp(name, "compact") == 0) {
+        src = compact;
+    } else if (strcmp(name, "network") == 0) {
+        src = network;
+    } else if (strcmp(name, "system") == 0) {
+        src = system;
+    } else if (strcmp(name, "storage") == 0) {
+        src = storage;
+    }
+    if (src) {
+        memcpy(s_config.disp_line, src, DISPLAY_LINE_MAX);
+    }
+}
+
+static void format_disp_field(uint8_t field, char *out, size_t n)
+{
+    if (field >= DISP_FIELD_COUNT) {
+        field = DISP_FIELD_BLANK;
+    }
+    char ip_str[16] = "192.168.4.1";
+    esp_netif_ip_info_t ip_info;
+    esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap && esp_netif_get_ip_info(ap, &ip_info) == ESP_OK && ip_info.ip.addr != 0) {
+        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
+    }
+
+    int clients = 0;
+    wifi_sta_list_t sta;
+    if (esp_wifi_ap_get_sta_list(&sta) == ESP_OK) {
+        clients = sta.num;
+    }
+
+    uint64_t total_bytes = 0, free_bytes = 0;
+    bool sd_info = (esp_vfs_fat_info(SD_MOUNT_POINT, &total_bytes, &free_bytes) == ESP_OK);
+
+    switch (field) {
+    case DISP_FIELD_BLANK:
+        out[0] = '\0';
+        break;
+    case DISP_FIELD_TITLE:
+        snprintf(out, n, "Vibe Pocket");
+        break;
+    case DISP_FIELD_SSID:
+        snprintf(out, n, "SSID: %.15s", s_config.wifi_ssid);
+        break;
+    case DISP_FIELD_IP:
+        snprintf(out, n, "IP: %s", ip_str);
+        break;
+    case DISP_FIELD_URL:
+        snprintf(out, n, "%.21s", "192.168.4.1");
+        break;
+    case DISP_FIELD_SD: {
+        if (!s_sd_mounted || !sd_info) {
+            snprintf(out, n, "NO CARD");
+            break;
+        }
+        char sz[8];
+        format_size_short(total_bytes, sz, sizeof(sz));
+        snprintf(out, n, "%s %u file%s", sz, s_sd_file_count, s_sd_file_count == 1 ? "" : "s");
+        break;
+    }
+    case DISP_FIELD_SD_FREE: {
+        if (!s_sd_mounted || !sd_info) {
+            snprintf(out, n, "Free --");
+            break;
+        }
+        char sz[8];
+        format_size_short(free_bytes, sz, sizeof(sz));
+        snprintf(out, n, "Free %s", sz);
+        break;
+    }
+    case DISP_FIELD_SD_TOTAL: {
+        if (!s_sd_mounted || !sd_info) {
+            snprintf(out, n, "SD --");
+            break;
+        }
+        char sz[8];
+        format_size_short(total_bytes, sz, sizeof(sz));
+        snprintf(out, n, "SD %s", sz);
+        break;
+    }
+    case DISP_FIELD_FILES:
+        if (!s_sd_mounted) {
+            snprintf(out, n, "Files --");
+        } else {
+            snprintf(out, n, "%u files", s_sd_file_count);
+        }
+        break;
+    case DISP_FIELD_CLIENTS:
+        snprintf(out, n, "Clients: %d", clients);
+        break;
+    case DISP_FIELD_CLIENTS_MAX:
+        snprintf(out, n, "WiFi %d/%u", clients, (unsigned)s_config.wifi_max_conn);
+        break;
+    case DISP_FIELD_UPTIME: {
+        unsigned sec = (unsigned)(esp_timer_get_time() / 1000000ULL);
+        unsigned days = sec / 86400;
+        unsigned hours = (sec % 86400) / 3600;
+        unsigned mins = (sec % 3600) / 60;
+        unsigned secs = sec % 60;
+        if (days > 0) {
+            snprintf(out, n, "Up %ud %uh", days, hours);
+        } else if (hours > 0) {
+            snprintf(out, n, "Up %uh %um", hours, mins);
+        } else {
+            snprintf(out, n, "Up %um %us", mins, secs);
+        }
+        break;
+    }
+    case DISP_FIELD_HEAP:
+        snprintf(out, n, "Heap %luKB", (unsigned long)(esp_get_free_heap_size() / 1024));
+        break;
+    case DISP_FIELD_PSRAM: {
+        size_t ps = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        if (ps == 0) {
+            snprintf(out, n, "PSRAM --");
+        } else {
+            snprintf(out, n, "PSRAM %luKB", (unsigned long)(ps / 1024));
+        }
+        break;
+    }
+    case DISP_FIELD_VERSION: {
+        const esp_app_desc_t *app = esp_app_get_description();
+        snprintf(out, n, "FW %.16s", app && app->version[0] ? app->version : "?");
+        break;
+    }
+    case DISP_FIELD_CHANNEL:
+        snprintf(out, n, "Channel %u", (unsigned)s_config.wifi_channel);
+        break;
+    case DISP_FIELD_STA_IP: {
+        char sta_ip[16] = "";
+        esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (sta_netif) {
+            esp_netif_ip_info_t sta;
+            if (esp_netif_get_ip_info(sta_netif, &sta) == ESP_OK && sta.ip.addr != 0) {
+                snprintf(sta_ip, sizeof(sta_ip), IPSTR, IP2STR(&sta.ip));
+            }
+        }
+        if (sta_ip[0]) {
+            snprintf(out, n, "STA %s", sta_ip);
+        } else {
+            snprintf(out, n, "STA --");
+        }
+        break;
+    }
+    case DISP_FIELD_MAC: {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+        snprintf(out, n, "%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        break;
+    }
+    case DISP_FIELD_CHIP: {
+        esp_chip_info_t chip;
+        esp_chip_info(&chip);
+        snprintf(out, n, "ESP32-S3 r%u", (unsigned)chip.revision);
+        break;
+    }
+    case DISP_FIELD_WIFI_MODE:
+        snprintf(out, n, "%s", s_config.sta_ssid[0] ? "AP+STA" : "AP only");
+        break;
+    case DISP_FIELD_WEB_ROOT:
+        snprintf(out, n, "Dir: %.16s", s_config.web_root_dir);
+        break;
+    case DISP_FIELD_TEMP: {
+        float t = 0;
+        if (s_tsens && temperature_sensor_get_celsius(s_tsens, &t) == ESP_OK) {
+            snprintf(out, n, "CPU %.0f C", t);
+        } else {
+            snprintf(out, n, "CPU --");
+        }
+        break;
+    }
+    case DISP_FIELD_MAX_UPLOAD:
+        snprintf(out, n, "Upload %luMB", (unsigned long)(s_config.max_file_size / (1024 * 1024)));
+        break;
+    case DISP_FIELD_RESET:
+        snprintf(out, n, "Boot %s", reset_reason_short());
+        break;
+    case DISP_FIELD_SD_OK:
+        snprintf(out, n, "%s", s_sd_mounted ? "SD OK" : "NO CARD");
+        break;
+    case DISP_FIELD_AP_CH:
+        snprintf(out, n, "%.12s ch%u", s_config.wifi_ssid, (unsigned)s_config.wifi_channel);
+        break;
+    default:
+        out[0] = '\0';
+        break;
+    }
+}
+
+static void push_display_status(void)
+{
+    char rows[DISPLAY_LINE_MAX][22];
+    const char *ptrs[DISPLAY_LINE_MAX];
+    unsigned n = DISPLAY_VISIBLE_LINES;
+    if (n > DISPLAY_LINE_MAX) {
+        n = DISPLAY_LINE_MAX;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        format_disp_field(s_config.disp_line[i], rows[i], sizeof(rows[i]));
+        ptrs[i] = rows[i];
+    }
+    display_status_update(ptrs, n);
+}
+
+static void display_refresh_task(void *arg)
+{
+    (void)arg;
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        push_display_status();
+    }
 }
 
 static const char PAGE_TAIL[] =
@@ -878,15 +1358,21 @@ static esp_err_t http_resp_dir_html(httpd_req_t *req, const char *dirpath)
 
 /* Forward declarations so we can delegate from wildcard handler if needed */
 static esp_err_t settings_get_handler(httpd_req_t *req);
+static esp_err_t settings_path_save_handler(httpd_req_t *req);
+static esp_err_t debug_get_handler(httpd_req_t *req);
 static esp_err_t status_get_handler(httpd_req_t *req);
 
 /* GET handler: serve file or directory listing */
 static esp_err_t download_get_handler(httpd_req_t *req)
 {
     /* If wildcard catch-all stole /settings or /status, delegate to the correct handler */
-    if (strcmp(req->uri, "/settings") == 0)
+    if (strcmp(req->uri, "/settings") == 0 || strncmp(req->uri, "/settings?", 10) == 0)
         return settings_get_handler(req);
-    if (strcmp(req->uri, "/status") == 0)
+    if (strncmp(req->uri, "/s/", 3) == 0)
+        return settings_path_save_handler(req);
+    if (strcmp(req->uri, "/debug") == 0 || strncmp(req->uri, "/debug?", 7) == 0)
+        return debug_get_handler(req);
+    if (strcmp(req->uri, "/status") == 0 || strncmp(req->uri, "/status?", 8) == 0)
         return status_get_handler(req);
 
     /* Captive portal: redirect detection URIs to our file server */
@@ -1083,18 +1569,26 @@ static esp_err_t delete_post_handler(httpd_req_t *req)
 static int parse_form_value(const char *body, const char *key, char *out, size_t out_size)
 {
     size_t key_len = strlen(key);
-    char search[32];
-    if (key_len + 2 >= sizeof(search)) return 0;
-    snprintf(search, sizeof(search), "%s=", key);
-    const char *p = strstr(body, search);
-    if (!p) return 0;
-    p += strlen(search);
-    const char *v_end = strchr(p, '&');
-    size_t v_len = v_end ? (size_t)(v_end - p) : strlen(p);
-    if (v_len >= out_size) v_len = out_size - 1;
-    memcpy(out, p, v_len);
-    out[v_len] = '\0';
-    return 1;
+    const char *p = body;
+    while (p && *p) {
+        if ((p == body || *(p - 1) == '&') &&
+            strncmp(p, key, key_len) == 0 && p[key_len] == '=') {
+            p += key_len + 1;
+            const char *v_end = strchr(p, '&');
+            size_t v_len = v_end ? (size_t)(v_end - p) : strlen(p);
+            if (v_len >= out_size) {
+                v_len = out_size - 1;
+            }
+            memcpy(out, p, v_len);
+            out[v_len] = '\0';
+            return 1;
+        }
+        p = strchr(p, '&');
+        if (p) {
+            p++;
+        }
+    }
+    return 0;
 }
 
 /* POST mkdir handler: create directory and redirect back to current path */
@@ -1287,7 +1781,7 @@ static esp_err_t rename_post_handler(httpd_req_t *req)
 }
 
 /* ========== Settings page ========== */
-#define SETTINGS_PAGE_BUF_SIZE 4096
+#define SETTINGS_PAGE_BUF_SIZE 7168
 
 static void settings_escape_html(const char *src, char *out, size_t out_size)
 {
@@ -1303,40 +1797,361 @@ static void settings_escape_html(const char *src, char *out, size_t out_size)
     out[i] = '\0';
 }
 
+static void settings_parse_display_fields(const char *body)
+{
+    char val[128];
+    if (parse_form_value(body, "led_mode", val, sizeof(val))) {
+        int led = atoi(val);
+        if (led >= 0 && led <= STATUS_LED_MODE_MAX) {
+            s_config.led_mode = (uint8_t)led;
+        }
+    }
+    if (parse_form_value(body, "disp_on", val, sizeof(val))) {
+        int v = atoi(val);
+        if (v == 0 || v == 1) {
+            s_config.disp_on = (uint8_t)v;
+        }
+    }
+    if (parse_form_value(body, "disp_con", val, sizeof(val))) {
+        int v = atoi(val);
+        if (v >= DISPLAY_CONTRAST_LOW && v <= DISPLAY_CONTRAST_HIGH) {
+            s_config.disp_contrast = (uint8_t)v;
+        }
+    }
+    if (parse_form_value(body, "disp_inv", val, sizeof(val))) {
+        int v = atoi(val);
+        if (v == 0 || v == 1) {
+            s_config.disp_invert = (uint8_t)v;
+        }
+    }
+    if (parse_form_value(body, "disp_rot", val, sizeof(val))) {
+        int v = atoi(val);
+        if (v == 0 || v == 1) {
+            s_config.disp_rotate = (uint8_t)v;
+        }
+    }
+    for (unsigned i = 0; i < DISPLAY_LINE_MAX; i++) {
+        char key[12];
+        snprintf(key, sizeof(key), "disp_l%u", i);
+        if (parse_form_value(body, key, val, sizeof(val))) {
+            int v = atoi(val);
+            if (v >= 0 && v < (int)DISP_FIELD_COUNT) {
+                s_config.disp_line[i] = (uint8_t)v;
+            }
+        }
+    }
+    if (parse_form_value(body, "disp_preset", val, sizeof(val))) {
+        uri_decode_in_place(val);
+        apply_disp_preset(val);
+    }
+    if (parse_form_value(body, "theme", val, sizeof(val))) {
+        int t = atoi(val);
+        if (t >= THEME_DARK && t <= THEME_LIGHT) {
+            s_config.theme = (uint8_t)t;
+        }
+    }
+    if (parse_form_value(body, "mobile_default", val, sizeof(val))) {
+        int m = atoi(val);
+        if (m >= VIEW_DESKTOP && m <= VIEW_MOBILE) {
+            s_config.mobile_default = (uint8_t)m;
+        }
+    }
+}
+
+static void settings_apply_display_live(void)
+{
+    status_led_set_mode(s_config.led_mode);
+    display_configure(s_config.disp_on, s_config.disp_contrast, s_config.disp_invert,
+                      s_config.disp_rotate);
+    display_apply();
+    push_display_status();
+}
+
+static int copy_settings_query(httpd_req_t *req, char *q, size_t qlen)
+{
+    q[0] = '\0';
+    if (qlen == 0) {
+        return 0;
+    }
+    esp_err_t err = httpd_req_get_url_query_str(req, q, qlen);
+    if (err == ESP_OK) {
+        return 1;
+    }
+    if (err == ESP_ERR_HTTPD_RESULT_TRUNC) {
+        q[qlen - 1] = '\0';
+        ESP_LOGW(TAG, "Settings query truncated (%u)", (unsigned)qlen);
+        return 1;
+    }
+    const char *qq = strchr(req->uri, '?');
+    if (qq && qq[1]) {
+        strncpy(q, qq + 1, qlen - 1);
+        q[qlen - 1] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+static bool settings_commit_display(void)
+{
+    ESP_LOGI(TAG, "Commit display led=%u on=%u con=%u inv=%u rot=%u lines=%u,%u,%u,%u",
+             (unsigned)s_config.led_mode, (unsigned)s_config.disp_on,
+             (unsigned)s_config.disp_contrast, (unsigned)s_config.disp_invert,
+             (unsigned)s_config.disp_rotate,
+             (unsigned)s_config.disp_line[0], (unsigned)s_config.disp_line[1],
+             (unsigned)s_config.disp_line[2], (unsigned)s_config.disp_line[3]);
+    if (settings_save() != ESP_OK) {
+        ESP_LOGE(TAG, "NVS save failed");
+        return false;
+    }
+    settings_apply_display_live();
+    {
+        const char *msg[4] = { "Saved", "OLED updated", "", "" };
+        display_status_update(msg, 4);
+    }
+    return true;
+}
+
+/* /s/led/on/con/inv/rot/l0/l1/l2/l3  — path save so captive browsers cannot drop the query. */
+static esp_err_t settings_path_save_handler(httpd_req_t *req)
+{
+    add_security_headers(req);
+    ESP_LOGI(TAG, "Settings path save uri=%s", req->uri);
+    unsigned led = 0, on = 1, con = 1, inv = 0, rot = 0, l0 = 1, l1 = 2, l2 = 3, l3 = 5;
+    int n = sscanf(req->uri, "/s/%u/%u/%u/%u/%u/%u/%u/%u/%u",
+                   &led, &on, &con, &inv, &rot, &l0, &l1, &l2, &l3);
+    if (n >= 9) {
+        if (led <= STATUS_LED_MODE_MAX) {
+            s_config.led_mode = (uint8_t)led;
+        }
+        if (on <= 1) {
+            s_config.disp_on = (uint8_t)on;
+        }
+        if (con <= DISPLAY_CONTRAST_HIGH) {
+            s_config.disp_contrast = (uint8_t)con;
+        }
+        if (inv <= 1) {
+            s_config.disp_invert = (uint8_t)inv;
+        }
+        if (rot <= 1) {
+            s_config.disp_rotate = (uint8_t)rot;
+        }
+        if (l0 < DISP_FIELD_COUNT) {
+            s_config.disp_line[0] = (uint8_t)l0;
+        }
+        if (l1 < DISP_FIELD_COUNT) {
+            s_config.disp_line[1] = (uint8_t)l1;
+        }
+        if (l2 < DISP_FIELD_COUNT) {
+            s_config.disp_line[2] = (uint8_t)l2;
+        }
+        if (l3 < DISP_FIELD_COUNT) {
+            s_config.disp_line[3] = (uint8_t)l3;
+        }
+    }
+    const char *preset = strstr(req->uri, "/p/");
+    if (preset) {
+        char name[16];
+        if (sscanf(preset + 3, "%15[^/?]", name) == 1) {
+            apply_disp_preset(name);
+        }
+    }
+    char q[128];
+    if (copy_settings_query(req, q, sizeof(q))) {
+        char val[16];
+        if (parse_form_value(q, "t", val, sizeof(val))) {
+            int t = atoi(val);
+            if (t >= THEME_DARK && t <= THEME_LIGHT) {
+                s_config.theme = (uint8_t)t;
+            }
+        }
+        if (parse_form_value(q, "m", val, sizeof(val))) {
+            int m = atoi(val);
+            if (m >= VIEW_DESKTOP && m <= VIEW_MOBILE) {
+                s_config.mobile_default = (uint8_t)m;
+            }
+        }
+        if (parse_form_value(q, "theme", val, sizeof(val))) {
+            int t = atoi(val);
+            if (t >= THEME_DARK && t <= THEME_LIGHT) {
+                s_config.theme = (uint8_t)t;
+            }
+        }
+        if (parse_form_value(q, "mobile_default", val, sizeof(val))) {
+            int m = atoi(val);
+            if (m >= VIEW_DESKTOP && m <= VIEW_MOBILE) {
+                s_config.mobile_default = (uint8_t)m;
+            }
+        }
+    }
+    if (settings_commit_display()) {
+        s_settings_saved = true;
+    }
+    return settings_get_handler(req);
+}
+
+static esp_err_t debug_get_handler(httpd_req_t *req)
+{
+    add_security_headers(req);
+    char buf[640];
+    int n = snprintf(buf, sizeof(buf),
+        "uri handler ok\n"
+        "led=%u\n"
+        "disp_on=%u contrast=%u invert=%u rotate=%u\n"
+        "lines=%u,%u,%u,%u\n"
+        "line0=%s\nline1=%s\nline2=%s\nline3=%s\n"
+        "theme=%u mobile_default=%u\n"
+        "ssid=%s channel=%u\n",
+        (unsigned)s_config.led_mode,
+        (unsigned)s_config.disp_on, (unsigned)s_config.disp_contrast,
+        (unsigned)s_config.disp_invert, (unsigned)s_config.disp_rotate,
+        (unsigned)s_config.disp_line[0], (unsigned)s_config.disp_line[1],
+        (unsigned)s_config.disp_line[2], (unsigned)s_config.disp_line[3],
+        k_disp_field_labels[s_config.disp_line[0] < DISP_FIELD_COUNT ? s_config.disp_line[0] : 0],
+        k_disp_field_labels[s_config.disp_line[1] < DISP_FIELD_COUNT ? s_config.disp_line[1] : 0],
+        k_disp_field_labels[s_config.disp_line[2] < DISP_FIELD_COUNT ? s_config.disp_line[2] : 0],
+        k_disp_field_labels[s_config.disp_line[3] < DISP_FIELD_COUNT ? s_config.disp_line[3] : 0],
+        (unsigned)s_config.theme, (unsigned)s_config.mobile_default,
+        s_config.wifi_ssid, (unsigned)s_config.wifi_channel);
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, buf, n > 0 ? (size_t)n : 0);
+    return ESP_OK;
+}
+
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
     add_security_headers(req);
+    ESP_LOGI(TAG, "Settings GET uri=%s", req->uri);
+
+    const char *saved = "";
+    char q[768];
+    if (copy_settings_query(req, q, sizeof(q)) && strstr(q, "save=1")) {
+        ESP_LOGI(TAG, "Settings GET save query=%s", q);
+        settings_parse_display_fields(q);
+        if (settings_commit_display()) {
+            saved = "<p class=\"saved\">Saved. The OLED should flash SAVED, then show your new lines.</p>";
+        } else {
+            saved = "<p class=\"saved\">Could not write settings. Try again.</p>";
+        }
+    } else if (s_settings_saved || (q[0] && strstr(q, "ok=1"))) {
+        saved = "<p class=\"saved\">Saved. The OLED should flash SAVED, then show your new lines.</p>";
+        s_settings_saved = false;
+    }
+
     char ssid_esc[64], pass_esc[80], web_esc[40], sta_ssid_esc[64], sta_pass_esc[80];
     settings_escape_html(s_config.wifi_ssid, ssid_esc, sizeof(ssid_esc));
     settings_escape_html(s_config.wifi_pass, pass_esc, sizeof(pass_esc));
     settings_escape_html(s_config.web_root_dir, web_esc, sizeof(web_esc));
     settings_escape_html(s_config.sta_ssid, sta_ssid_esc, sizeof(sta_ssid_esc));
     settings_escape_html(s_config.sta_pass, sta_pass_esc, sizeof(sta_pass_esc));
-
-    const char *saved = "";
-    char uri[64];
-    if (httpd_req_get_url_query_str(req, uri, sizeof(uri)) == ESP_OK) {
-        if (strstr(uri, "saved=1")) saved = "<p style=\"color:#0f0\">Settings saved. Changes applied.</p>";
-    }
     int mobile = get_mobile_from_req(req);
     const char *view_link = mobile ? "Desktop view" : "Mobile view";
     const char *view_href = mobile ? "/settings?desktop=1" : "/settings?mobile=1";
     const char *theme_class = s_config.theme == THEME_LIGHT ? "theme-light" : "theme-dark";
     const char *mobile_class = mobile ? " mobile" : "";
+    unsigned dl0 = s_config.disp_line[0] < DISP_FIELD_COUNT ? s_config.disp_line[0] : 0;
+    unsigned dl1 = s_config.disp_line[1] < DISP_FIELD_COUNT ? s_config.disp_line[1] : 0;
+    unsigned dl2 = s_config.disp_line[2] < DISP_FIELD_COUNT ? s_config.disp_line[2] : 0;
+    unsigned dl3 = s_config.disp_line[3] < DISP_FIELD_COUNT ? s_config.disp_line[3] : 0;
+    char dbg[384];
+    snprintf(dbg, sizeof(dbg),
+        "<p class=\"hint\">Stored: %s · %s · %s · %s · LED %u · screen %s. "
+        "<a href=\"/debug\">raw dump</a> · "
+        "<a href=\"/s/1/1/1/0/0/11/3/5/9\">test save (uptime on line 1)</a></p>",
+        k_disp_field_labels[dl0], k_disp_field_labels[dl1],
+        k_disp_field_labels[dl2], k_disp_field_labels[dl3],
+        (unsigned)s_config.led_mode, s_config.disp_on ? "on" : "OFF");
 
-    char page[SETTINGS_PAGE_BUF_SIZE];
-    int n = snprintf(page, sizeof(page),
+    const size_t cap = 16384;
+    char *page = malloc(cap);
+    if (!page) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    int n = snprintf(page, cap,
         "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         "<title>Settings</title>"
         "<style>body{font-family:sans-serif;margin:1.5rem;background:#1a1a2e;color:#eee;} h1{color:#e94560;} "
         "a{color:#e94560;} label{display:block;margin:0.5rem 0;} input,select{width:100%%;max-width:280px;padding:0.4rem;margin:0.2rem 0;} "
         "button{background:#0f3460;color:#fff;border:none;padding:0.5rem 1rem;cursor:pointer;border-radius:4px;} "
+        "button.save{background:#0a7a32;font-size:1.05rem;padding:0.6rem 1.2rem;} "
+        ".saved{background:#0a7a32;color:#fff;padding:0.7rem 1rem;border-radius:6px;margin-bottom:1rem;font-weight:bold;} "
         ".hint{color:#888;font-size:0.9rem;} .nointernet{background:#16213e;padding:0.5rem 0.8rem;border-radius:4px;margin-bottom:1rem;font-size:0.9rem;color:#aaa;} "
         "body.theme-light{background:#f5f5f5;color:#111;} body.theme-light .hint{color:#555;} body.theme-light .nointernet{background:#e0e0e0;color:#333;} "
+        "body.theme-light .saved{background:#1b7a3a;} "
         ".mobile button{min-height:44px;}</style></head><body class=\"%s%s\">"
         "<a href=\"%s\">%s</a> | <a href=\"/\">Files</a> | <a href=\"/status\">Status</a><br><br>"
         "<p class=\"nointernet\">If your device says \"No Internet\": that is normal. Type <strong>192.168.4.1</strong> in the browser.</p>"
-        "<h1>Settings</h1> %s"
+        "<h1>Settings</h1> %s %s"
+        "<form id=\"df\" method=\"GET\" action=\"/settings\">"
+        "<input type=\"hidden\" name=\"save\" value=\"1\">"
+        "<h2>Web interface</h2>"
+        "<label>Theme</label><select name=\"theme\"><option value=\"0\"%s>Dark</option><option value=\"1\"%s>Light</option></select>"
+        "<label>Default view</label><select name=\"mobile_default\"><option value=\"0\"%s>Desktop</option><option value=\"1\"%s>Mobile</option></select>"
+        "<h2>RGB LED</h2>"
+        "<label>Onboard LED</label><select name=\"led_mode\">",
+        theme_class, mobile_class, view_href, view_link, saved, dbg,
+        s_config.theme == THEME_DARK ? " selected" : "", s_config.theme == THEME_LIGHT ? " selected" : "",
+        s_config.mobile_default == VIEW_DESKTOP ? " selected" : "", s_config.mobile_default == VIEW_MOBILE ? " selected" : "");
+    if (n < 0 || (size_t)n >= cap) {
+        free(page);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Buffer error");
+        return ESP_FAIL;
+    }
+    for (unsigned i = 0; i <= STATUS_LED_MODE_MAX && n > 0 && (size_t)n + 80 < cap; i++) {
+        n += snprintf(page + n, cap - (size_t)n,
+                      "<option value=\"%u\"%s>%s</option>",
+                      i, s_config.led_mode == i ? " selected" : "", k_led_mode_labels[i]);
+    }
+    n += snprintf(page + n, cap - (size_t)n,
+        "</select>"
+        "<p class=\"hint\">Status: red = no SD card, green = idle, cyan = a phone or laptop is connected. Patterns stay dim. Rainbow / sparkle cycle hues; heartbeat is a double red pulse.</p>"
+        "<h2>OLED display</h2>"
+        "<label>Screen</label><select name=\"disp_on\"><option value=\"1\"%s>On (default)</option><option value=\"0\"%s>Off</option></select>"
+        "<label>Contrast</label><select name=\"disp_con\">"
+        "<option value=\"0\"%s>Low</option><option value=\"1\"%s>Medium (default)</option><option value=\"2\"%s>High</option></select>"
+        "<label>Colors</label><select name=\"disp_inv\"><option value=\"0\"%s>Normal</option><option value=\"1\"%s>Inverted</option></select>"
+        "<label>Orientation</label><select name=\"disp_rot\"><option value=\"0\"%s>Normal</option><option value=\"1\"%s>Rotate 180°</option></select>",
+        s_config.disp_on ? " selected" : "", s_config.disp_on ? "" : " selected",
+        s_config.disp_contrast == 0 ? " selected" : "", s_config.disp_contrast == 1 ? " selected" : "",
+        s_config.disp_contrast == 2 ? " selected" : "",
+        s_config.disp_invert ? "" : " selected", s_config.disp_invert ? " selected" : "",
+        s_config.disp_rotate ? "" : " selected", s_config.disp_rotate ? " selected" : "");
+    if (n < 0 || (size_t)n >= cap) {
+        free(page);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Buffer error");
+        return ESP_FAIL;
+    }
+    n += snprintf(page + n, cap - (size_t)n,
+        "<label>Quick layout</label><select name=\"disp_preset\">"
+        "<option value=\"\">Keep lines below</option>"
+        "<option value=\"status\">Status: title, SSID, IP, SD</option>"
+        "<option value=\"compact\">Compact: SSID, IP, SD, URL</option>"
+        "<option value=\"network\">Network: SSID, IP, clients, SD</option>"
+        "<option value=\"system\">System: uptime, heap, firmware, temp</option>"
+        "<option value=\"storage\">Storage: SD, free, files, clients</option>"
+        "</select>"
+        "<p class=\"hint\">Each OLED row is about 21 characters. Pick a field per line, or a quick layout (overrides the lines).</p>");
+    for (unsigned i = 0; i < DISPLAY_VISIBLE_LINES && n > 0 && (size_t)n + 128 < cap; i++) {
+        n += snprintf(page + n, cap - (size_t)n,
+                      "<label>Line %u</label><select name=\"disp_l%u\">", i + 1, i);
+        for (unsigned f = 0; f < DISP_FIELD_COUNT && n > 0 && (size_t)n + 80 < cap; f++) {
+            n += snprintf(page + n, cap - (size_t)n,
+                          "<option value=\"%u\"%s>%s</option>",
+                          f, s_config.disp_line[i] == f ? " selected" : "", k_disp_field_labels[f]);
+        }
+        n += snprintf(page + n, cap - (size_t)n, "</select>");
+    }
+    n += snprintf(page + n, cap - (size_t)n,
+        "<p style=\"margin-top:0.8rem\"><button class=\"save\" type=\"submit\">Save screen &amp; LED</button></p>"
+        "<p class=\"hint\">If Save does nothing, tap <strong>test save (uptime on line 1)</strong> above. The OLED should say SAVED.</p>"
+        "</form>"
+        "<script>"
+        "document.getElementById('df').addEventListener('submit',function(e){"
+        "var f=e.target;"
+        "var p=f.disp_preset.value;"
+        "f.action='/s/'+f.led_mode.value+'/'+f.disp_on.value+'/'+f.disp_con.value+'/'+f.disp_inv.value+'/'+f.disp_rot.value+'/'+f.disp_l0.value+'/'+f.disp_l1.value+'/'+f.disp_l2.value+'/'+f.disp_l3.value+(p?('/p/'+p):'');"
+        "});"
+        "</script>"
         "<form method=\"POST\" action=\"/settings\">"
         "<h2>Access Point (this device's WiFi)</h2>"
         "<label>WiFi SSID (AP name)</label><input type=\"text\" name=\"ssid\" value=\"%s\" maxlength=\"32\" required>"
@@ -1348,28 +2163,28 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         "<p class=\"hint\">Device will also connect to this WiFi (AP+STA). Leave SSID empty for AP only.</p>"
         "<label>Network SSID</label><input type=\"text\" name=\"sta_ssid\" value=\"%s\" maxlength=\"32\">"
         "<label>Network Password</label><input type=\"password\" name=\"sta_pass\" value=\"%s\" maxlength=\"63\">"
-        "<h2>Web interface</h2>"
-        "<label>Theme</label><select name=\"theme\"><option value=\"0\"%s>Dark</option><option value=\"1\"%s>Light</option></select>"
-        "<label>Default view</label><select name=\"mobile_default\"><option value=\"0\"%s>Desktop</option><option value=\"1\"%s>Mobile</option></select>"
         "<h2>Storage</h2>"
         "<label>Web root folder (on SD)</label><input type=\"text\" name=\"web_root\" value=\"%s\" maxlength=\"28\">"
         "<p class=\"hint\">Default: files.</p>"
         "<label>Max upload size (MB, 1–32)</label><input type=\"number\" name=\"max_mb\" value=\"%lu\" min=\"%d\" max=\"%d\">"
-        "<p style=\"margin-top:1rem\"><button type=\"submit\">Save and reboot</button> <a href=\"/\">Cancel</a></p>"
-        "<p style=\"margin-top:1.5rem\"><form method=\"POST\" action=\"/reboot\" style=\"display:inline\"><button type=\"submit\">Reboot now</button></form> (no settings changed)</p>"
-        "</form></body></html>",
-        theme_class, mobile_class, view_href, view_link, saved,
+        "<p class=\"hint\">Wi‑Fi name, password, channel, or join-network changes reboot after save. If this button does nothing, open Safari or Chrome to http://192.168.4.1/settings</p>"
+        "<p style=\"margin-top:1rem\"><button class=\"save\" type=\"submit\">Save Wi‑Fi &amp; storage</button> <a href=\"/\">Cancel</a></p>"
+        "</form>"
+        "<hr style=\"border:none;border-top:1px solid #333;margin:2rem 0 1rem\">"
+        "<p class=\"hint\">Need a restart? This does not save the form above.</p>"
+        "<form method=\"POST\" action=\"/reboot\"><button type=\"submit\">Reboot device</button></form>"
+        "</body></html>",
         ssid_esc, pass_esc, (unsigned)s_config.wifi_channel, (unsigned)s_config.wifi_max_conn,
         sta_ssid_esc, sta_pass_esc,
-        s_config.theme == THEME_DARK ? " selected" : "", s_config.theme == THEME_LIGHT ? " selected" : "",
-        s_config.mobile_default == VIEW_DESKTOP ? " selected" : "", s_config.mobile_default == VIEW_MOBILE ? " selected" : "",
         web_esc, (unsigned long)(s_config.max_file_size / (1024 * 1024)), MIN_MAX_FILE_MB, MAX_MAX_FILE_MB);
-    if (n < 0 || (size_t)n >= sizeof(page)) {
+    if (n < 0 || (size_t)n >= cap) {
+        free(page);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Buffer error");
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, page, (size_t)n);
+    free(page);
     return ESP_OK;
 }
 
@@ -1470,23 +2285,41 @@ static esp_err_t reboot_post_handler(httpd_req_t *req)
 
 static esp_err_t settings_post_handler(httpd_req_t *req)
 {
+    const size_t max_body = 4096;
     size_t body_len = req->content_len;
-    if (body_len == 0 || body_len > 1024) {
+    if (body_len > max_body) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid body");
         return ESP_FAIL;
     }
-    char *body = malloc(body_len + 1);
+    char *body = malloc(max_body + 1);
     if (!body) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_FAIL;
     }
-    int r = httpd_req_recv(req, body, body_len);
-    if (r <= 0 || (size_t)r != body_len) {
+    size_t got = 0;
+    size_t want = body_len > 0 ? body_len : max_body;
+    while (got < want) {
+        int r = httpd_req_recv(req, body + got, want - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (r <= 0) {
+            break;
+        }
+        got += (size_t)r;
+        if (body_len == 0) {
+            break;
+        }
+    }
+    if (got == 0) {
         free(body);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to read body");
         return ESP_FAIL;
     }
-    body[body_len] = '\0';
+    body[got] = '\0';
+    ESP_LOGI(TAG, "Settings POST %u bytes", (unsigned)got);
+
+    app_config_t prev = s_config;
 
     char val[128];
     if (parse_form_value(body, "ssid", val, sizeof(val))) {
@@ -1532,14 +2365,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         strncpy(s_config.sta_pass, val, sizeof(s_config.sta_pass) - 1);
         s_config.sta_pass[sizeof(s_config.sta_pass) - 1] = '\0';
     }
-    if (parse_form_value(body, "theme", val, sizeof(val))) {
-        int t = atoi(val);
-        if (t >= THEME_DARK && t <= THEME_LIGHT) s_config.theme = (uint8_t)t;
-    }
-    if (parse_form_value(body, "mobile_default", val, sizeof(val))) {
-        int m = atoi(val);
-        if (m >= VIEW_DESKTOP && m <= VIEW_MOBILE) s_config.mobile_default = (uint8_t)m;
-    }
+    settings_parse_display_fields(body);
     free(body);
 
     if (settings_save() != ESP_OK) {
@@ -1547,13 +2373,39 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    httpd_resp_set_type(req, "text/html");
-    httpd_resp_sendstr(req,
-        "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta http-equiv=\"refresh\" content=\"3;url=/settings?saved=1\">"
-        "</head><body style=\"font-family:sans-serif;margin:2rem;background:#1a1a2e;color:#eee;\">"
-        "<h1>Settings saved</h1><p>Rebooting in 3 seconds to apply WiFi changes...</p><a href=\"/settings\">Go to settings</a></body></html>");
-    xTaskCreate(delayed_reboot_task, "reboot", 2048, NULL, 5, NULL);
-    return ESP_OK;
+    settings_apply();
+    settings_apply_display_live();
+    {
+        const char *msg[4] = { "Saved", "OLED updated", "", "" };
+        display_status_update(msg, 4);
+    }
+
+    bool wifi_changed =
+        strcmp(prev.wifi_ssid, s_config.wifi_ssid) != 0 ||
+        strcmp(prev.wifi_pass, s_config.wifi_pass) != 0 ||
+        prev.wifi_channel != s_config.wifi_channel ||
+        prev.wifi_max_conn != s_config.wifi_max_conn ||
+        strcmp(prev.sta_ssid, s_config.sta_ssid) != 0 ||
+        strcmp(prev.sta_pass, s_config.sta_pass) != 0;
+
+    ESP_LOGI(TAG, "Settings saved (wifi_changed=%d led=%u disp_on=%u lines %u,%u,%u,%u)",
+             (int)wifi_changed, (unsigned)s_config.led_mode, (unsigned)s_config.disp_on,
+             (unsigned)s_config.disp_line[0], (unsigned)s_config.disp_line[1],
+             (unsigned)s_config.disp_line[2], (unsigned)s_config.disp_line[3]);
+
+    if (wifi_changed) {
+        httpd_resp_set_type(req, "text/html");
+        httpd_resp_sendstr(req,
+            "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><meta http-equiv=\"refresh\" content=\"3;url=/settings\">"
+            "</head><body style=\"font-family:sans-serif;margin:2rem;background:#1a1a2e;color:#eee;\">"
+            "<h1>Settings saved</h1><p>Rebooting in 3 seconds to apply Wi‑Fi changes...</p>"
+            "<a href=\"/settings\">Go to settings</a></body></html>");
+        xTaskCreate(delayed_reboot_task, "reboot", 2048, NULL, 5, NULL);
+        return ESP_OK;
+    }
+
+    s_settings_saved = true;
+    return settings_get_handler(req);
 }
 
 static esp_err_t start_http_file_server(const char *base_path)
@@ -1573,7 +2425,9 @@ static esp_err_t start_http_file_server(const char *base_path)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_uri_handlers = 18;
-    config.stack_size = 8192;  /* handlers use large locals (e.g. settings page 2KB); default 4KB overflows */
+    config.lru_purge_enable = true; /* captive portal otherwise fills all sockets and Save never connects */
+    config.max_open_sockets = 10;
+    config.stack_size = 12288;
 
     if (httpd_start(&server, &config) != ESP_OK) {
         free(server_data);
@@ -1602,6 +2456,22 @@ static esp_err_t start_http_file_server(const char *base_path)
         .user_ctx = NULL,
     };
     httpd_register_uri_handler(server, &settings_post_uri);
+
+    httpd_uri_t path_save_uri = {
+        .uri = "/s/*",
+        .method = HTTP_GET,
+        .handler = settings_path_save_handler,
+        .user_ctx = NULL,
+    };
+    httpd_register_uri_handler(server, &path_save_uri);
+
+    httpd_uri_t debug_uri = {
+        .uri = "/debug",
+        .method = HTTP_GET,
+        .handler = debug_get_handler,
+        .user_ctx = NULL,
+    };
+    httpd_register_uri_handler(server, &debug_uri);
 
     httpd_uri_t status_uri = {
         .uri = "/status",
@@ -1670,6 +2540,7 @@ void app_main(void)
 
     settings_load();
     settings_apply();
+    status_led_init(s_config.led_mode);
 
     wifi_init_softap();
 
@@ -1683,6 +2554,12 @@ void app_main(void)
             ESP_LOGW(TAG, "Could not create web root %s (errno %d)", s_sd_web_root, errno);
         }
     }
+    status_led_set_sd_ok(sd_ret == ESP_OK);
+    s_sd_mounted = (sd_ret == ESP_OK);
+    {
+        char unused[22];
+        format_sd_display_line(s_sd_mounted, unused, sizeof(unused));
+    }
 
     ret = start_http_file_server(sd_ret == ESP_OK ? s_sd_web_root : NULL);
     if (ret != ESP_OK) {
@@ -1690,18 +2567,19 @@ void app_main(void)
         return;
     }
 
-    display_status_init();
     {
-        char ip_str[16];
-        ip_str[0] = '\0';
-        esp_netif_ip_info_t ip_info;
-        esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-        if (ap && esp_netif_get_ip_info(ap, &ip_info) == ESP_OK) {
-            snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
+        temperature_sensor_config_t tcfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
+        if (temperature_sensor_install(&tcfg, &s_tsens) == ESP_OK) {
+            temperature_sensor_enable(s_tsens);
+        } else {
+            s_tsens = NULL;
         }
-        display_status_update(s_config.wifi_ssid, ip_str[0] ? ip_str : "192.168.4.1",
-                             (sd_ret == ESP_OK), "http://192.168.4.1");
     }
+    display_configure(s_config.disp_on, s_config.disp_contrast, s_config.disp_invert,
+                      s_config.disp_rotate);
+    display_status_init();
+    push_display_status();
+    xTaskCreate(display_refresh_task, "oled", 8192, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "Ready. Connect to WiFi \"%s\", then open http://192.168.4.1", s_config.wifi_ssid);
 }

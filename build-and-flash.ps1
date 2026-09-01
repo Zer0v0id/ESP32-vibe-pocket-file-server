@@ -1,13 +1,11 @@
 # ESP-IDF build helper
 # Run from any PowerShell. Cleans, sets target esp32s3, and builds. Does not flash;
 # you are prompted to run the flash command yourself.
-# Use -WithDisplay for SSD1306 OLED firmware (build-display).
 # If idf.py is not in PATH, launches a new window using Initialize-Idf.ps1.
 
 param(
     [string]$ProjectDir = "",
-    [switch]$LaunchIdfFirst = $false,
-    [switch]$WithDisplay = $false
+    [switch]$LaunchIdfFirst = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,8 +60,7 @@ function Ensure-IdfInPath {
 
 function Invoke-BuildAndFlash {
     param(
-        [string]$projectDir,
-        [switch]$WithDisplay
+        [string]$projectDir
     )
 
     Set-Location $projectDir
@@ -71,13 +68,6 @@ function Invoke-BuildAndFlash {
 
     $idfArgs = @()
     $buildDirName = "build"
-    if ($WithDisplay) {
-        $idfArgs = @("-B", "build-display", "-DWITH_DISPLAY=ON")
-        $buildDirName = "build-display"
-        Write-Host "Building WITH SSD1306 OLED display." -ForegroundColor Cyan
-    } else {
-        Write-Host "Building WITHOUT display (default). Use -WithDisplay for OLED firmware." -ForegroundColor Cyan
-    }
 
     $buildDir = Join-Path $projectDir $buildDirName
     Write-Host "Removing $buildDirName folder and contents..." -ForegroundColor Yellow
@@ -112,15 +102,9 @@ function Invoke-BuildAndFlash {
     Write-Host "Build completed successfully." -ForegroundColor Green
     Write-Host ""
     Write-Host "To flash the device, run:" -ForegroundColor Cyan
-    if ($WithDisplay) {
-        Write-Host "  idf.py -B build-display -DWITH_DISPLAY=ON flash" -ForegroundColor White
-        Write-Host "or, to specify a port:" -ForegroundColor Cyan
-        Write-Host "  idf.py -B build-display -DWITH_DISPLAY=ON -p COMx flash" -ForegroundColor White
-    } else {
-        Write-Host "  idf.py flash" -ForegroundColor White
-        Write-Host "or, to specify a port:" -ForegroundColor Cyan
-        Write-Host "  idf.py -p COMx flash" -ForegroundColor White
-    }
+    Write-Host "  idf.py flash" -ForegroundColor White
+    Write-Host "or, to specify a port:" -ForegroundColor Cyan
+    Write-Host "  idf.py -p COMx flash" -ForegroundColor White
     Write-Host ""
 }
 
@@ -137,7 +121,7 @@ if ($LaunchIdfFirst) {
         Write-Host "Initialize-Idf.ps1 did not set up idf.py." -ForegroundColor Red
         exit 1
     }
-    Invoke-BuildAndFlash -projectDir $ProjectDir -WithDisplay:$WithDisplay
+    Invoke-BuildAndFlash -projectDir $ProjectDir
     exit 0
 }
 
@@ -153,7 +137,7 @@ if (-not (Test-Path $projectDir)) {
 }
 
 if (Get-Command idf.py -ErrorAction SilentlyContinue) {
-    Invoke-BuildAndFlash -projectDir $projectDir -WithDisplay:$WithDisplay
+    Invoke-BuildAndFlash -projectDir $projectDir
     exit 0
 }
 
@@ -166,6 +150,5 @@ if (-not (Test-Path $InitializeIdfScript)) {
 
 $scriptPath = $MyInvocation.MyCommand.Path
 $argList = @("-ExecutionPolicy", "Bypass", "-NoExit", "-File", $scriptPath, "-LaunchIdfFirst", "-ProjectDir", $projectDir)
-if ($WithDisplay) { $argList += "-WithDisplay" }
 Write-Host "Launching ESP-IDF window (Initialize-Idf.ps1) and running build there..." -ForegroundColor Cyan
 Start-Process -FilePath "powershell.exe" -ArgumentList $argList

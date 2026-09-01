@@ -10,37 +10,34 @@ config BOARD_ESP32S3
 
 config DISPLAY_SSD1306
     bool "SSD1306 OLED status display (I2C)"
-    default n
+    default y
     help
-        Build firmware that drives an optional 128x64 SSD1306 OLED over I2C.
-        Shows SSID, IP address, SD card status, and the server URL.
+        Drive an optional SSD1306 OLED over I2C. Status lines, contrast,
+        rotation, and on/off are set on the Settings page.
 
-        Leave this disabled for boards with no display. The file server
-        is identical either way.
-
-        Enable via: idf.py menuconfig
-        or:         idf.py -B build-display -DWITH_DISPLAY=ON build
-
-        If this is enabled but no OLED is wired, init fails quietly and
-        the web UI still works.
+        Leave this enabled even with no screen: init fails quietly and
+        the file server still runs. Turn the panel off in Settings
+        (Screen = Off) if you have an OLED but do not want it lit.
 
 if DISPLAY_SSD1306
 
 config DISPLAY_SSD1306_SDA_GPIO
     int "I2C SDA GPIO"
-    default 8
+    default 18
     range 0 48
     help
         ESP32-S3 GPIO connected to the OLED SDA pin.
         Must not overlap SD SPI pins (5, 11, 12, 13).
+        Do not use GPIO 46 (input-only / strapping).
 
 config DISPLAY_SSD1306_SCL_GPIO
     int "I2C SCL GPIO"
-    default 9
+    default 17
     range 0 48
     help
         ESP32-S3 GPIO connected to the OLED SCL (SCK) pin.
         Must not overlap SD SPI pins (5, 11, 12, 13).
+        Do not use GPIO 46 (input-only / strapping).
 
 config DISPLAY_SSD1306_I2C_ADDR
     hex "I2C address"
@@ -48,6 +45,50 @@ config DISPLAY_SSD1306_I2C_ADDR
     help
         Most SSD1306 modules use 0x3C. Some use 0x3D.
 
+choice DISPLAY_SSD1306_RESOLUTION
+    prompt "OLED resolution"
+    default DISPLAY_SSD1306_128X32
+    help
+        0.91 inch modules are usually 128x32.
+        0.96 inch modules are usually 128x64.
+        Using the wrong size produces a garbled or partial image.
+
+config DISPLAY_SSD1306_128X32
+    bool "128x32 (0.91 inch)"
+
+config DISPLAY_SSD1306_128X64
+    bool "128x64 (0.96 inch)"
+
+endchoice
+
 endif
+
+config STATUS_LED
+    bool "Onboard RGB LED (WS2812)"
+    default y
+    help
+        Drive the DevKit RGB LED as a dim status light. Default pattern
+        is dim green. Change the pattern on the Settings page.
+
+        ESP32-S3-DevKitC-1 typically uses GPIO 48. Some board revisions
+        use GPIO 38. Leave this enabled so the LED is not left at full
+        white after boot or an I2C pin scan.
+
+config STATUS_LED_GPIO
+    int "RGB LED GPIO"
+    default 48
+    range 0 48
+    depends on STATUS_LED
+    help
+        ESP32-S3-DevKitC-1: GPIO 48. Some boards use GPIO 38.
+
+config STATUS_LED_BRIGHTNESS
+    int "LED brightness scale (1-64)"
+    default 8
+    range 1 64
+    depends on STATUS_LED
+    help
+        8 is dim. 64 is full brightness. Keep this low; WS2812 LEDs are
+        painful at full RGB (255,255,255).
 
 endmenu

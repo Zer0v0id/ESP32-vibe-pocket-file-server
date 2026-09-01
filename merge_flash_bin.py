@@ -3,8 +3,8 @@
 Merge ESP-IDF build outputs into a single flashable .bin.
 Run from project root after idf.py build.
 
-  python merge_flash_bin.py                 # default build/
-  python merge_flash_bin.py build-display   # OLED variant
+  python merge_flash_bin.py           # default build/
+  python merge_flash_bin.py build     # same
 """
 import os
 import subprocess

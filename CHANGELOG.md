@@ -8,8 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Optional SSD1306 128×64 OLED status display (I2C), selected at build time
-- Firmware variants: default build without display, `-DWITH_DISPLAY=ON` build with display
+- SSD1306 OLED status display (I2C) in the default firmware; turn the screen off in Settings
+- Configurable OLED lines, contrast, invert, rotate 180°, and quick layouts
+- Onboard WS2812 RGB LED: solid colors, breathe, rainbow, heartbeat, blink, sparkle, alternate, and Status
+- Settings apply display/LED/theme without reboot; Wi‑Fi changes still reboot
 - `DISPLAY_WIRING.md` for OLED pinout and troubleshooting
 - File sorting in directory listings (directories first, then alphabetically)
 - Security headers (X-Content-Type-Options, X-Frame-Options, Cache-Control)
@@ -18,11 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CHANGELOG.md` to track project changes
 
 ### Changed
+- Single firmware image (OLED driver included; no separate with/without-display builds)
 - Improved directory listing performance with sorted entries
 - Enhanced code organization for better maintainability
 
 ### Fixed
-- None
+- Settings save on phone captive-portal browsers (GET path save, extra HTTP sockets)
 
 ## [1.0.0] - Initial Release
 

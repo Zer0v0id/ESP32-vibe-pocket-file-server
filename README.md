@@ -1,96 +1,67 @@
 # Vibe Pocket File Server
 
-Vibe Pocket File Server runs on an ESP32-S3 so you can browse, download, upload, and delete files on a microSD card from a phone or laptop. The device runs as a Wi‑Fi Access Point (softAP)—no router or internet required.
+Vibe Pocket File Server runs on an ESP32-S3 so you can browse, download, upload, and delete files on a microSD card from a phone or laptop. The device is a Wi‑Fi Access Point (softAP)—no router or internet required.
 
-Features
-SD / microSD storage – Files live on a card connected via SPI.
-​
+There is **one firmware**. An SSD1306 OLED is supported out of the box. If you have no screen, leave it unwired. If you have one and want it dark, turn it off in Settings.
 
-Web interface – Open a browser, go to the device IP, and use the file list and actions.
-​
+## Features
 
-Browse – Navigate folders and open files; directories show as links.
-​
+- **SD / microSD storage** — Files live on a FAT32 card connected via SPI.
+- **Web interface** — Open a browser, go to the device IP, and use the file list and actions.
+- **Browse / download / upload / delete / rename** — Folders are links; uploads go under the `files` folder on the SD card (or a path you choose).
+- **New folder** — Create a directory in the current path from the web UI (`POST /mkdir`).
+- **Path breadcrumbs** — Jump back to any parent directory.
+- **Captive portal** — DNS (port 53) resolves all hostnames to the device. Common captive-detection URLs (`/generate_204`, `/hotspot-detect.html`) redirect to the file server so phones may open it automatically.
+- **No SD card** — The server still starts and shows a built-in “No SD card mounted” page.
+- **Standalone AP** — Connect to the board’s Wi‑Fi and open the server URL.
+- **Settings** — [http://192.168.4.1/settings](http://192.168.4.1/settings): Wi‑Fi SSID, password, AP channel, max connections, optional join-network (STA), theme, default view, RGB LED, OLED (on/off, contrast, invert, rotate, line fields), web root, max upload size. Stored in NVS. Display, LED, and theme apply immediately. Changing Wi‑Fi name, password, channel, or join-network settings reboots. **Reboot device** restarts without saving the form.
+- **Status** — [http://192.168.4.1/status](http://192.168.4.1/status): uptime, heap, SD space, AP clients, STA IP, firmware version.
+- **Theme** — Dark or Light, applied to the file list, Settings, and Status.
+- **RGB LED** — Onboard WS2812 (GPIO 48 on most ESP32-S3 DevKits; some use GPIO 38). Default is dim green. Settings: off, solid colors (green/blue/amber/red/white/purple/cyan/pink/yellow), breathe, rainbow, heartbeat, blink, alternate, sparkle, or Status (red = no SD, green = idle, cyan = a client is connected). Brightness stays low.
+- **OLED** — Optional SSD1306 (I2C). Four configurable status lines on 128×32 (eight on 128×64). Turn the screen **Off** in Settings if you do not want it. See [DISPLAY_WIRING.md](DISPLAY_WIRING.md).
+- **Mobile view** — Larger touch targets, or switch with the Mobile view / Desktop view link.
+- **SD space in UI** — `SD: X MB free / Y MB` above the file table.
 
-Download – Click a file in the list to download it.
-​
+## Hardware
 
-Upload – Choose a file and upload it; it is saved under the files folder on the SD card (or a path you choose in the URL).
-​
+- ESP32-S3 (any module with Wi‑Fi). 8MB PSRAM boards work well.
+- microSD card (FAT32) and a microSD SPI breakout.
+- Optional SSD1306 OLED (I2C), typically 128×32 (0.91") or 128×64 (0.96").
 
-Delete – Delete files from the list (with confirmation).
-​
+### SD card (SPI)
 
-New folder – Create a directory in the current path from the web UI (POST /mkdir).
-​
+| SD breakout | ESP32-S3 |
+|-------------|----------|
+| GND | GND |
+| VCC / 3.3V | 3.3V |
+| MISO | GPIO 12 |
+| MOSI | GPIO 11 |
+| SCK / CLK | GPIO 13 |
+| CS | GPIO 5 |
 
-Path breadcrumbs – The current path is shown as clickable links so you can jump back to any parent directory.
-​
+Pins are set in `main/main.c` (`PIN_NUM_*`).
 
-Captive portal – When a client joins the AP, DNS (port 53) resolves all hostnames to the device, and common captive-detection URLs (for example /generate_204, /hotspot-detect.html) redirect to the file server so phones and tablets may open the file browser automatically.
-​
+### OLED (I2C), optional
 
-No SD card – If the SD card is not mounted, the server still starts and shows a built-in “No SD card mounted” page so you see a clear message instead of a connection error.
-​
+| SSD1306 | ESP32-S3 |
+|---------|----------|
+| GND | GND |
+| VCC | 3.3V |
+| SDA | GPIO 18 |
+| SCL / SCK | GPIO 17 |
 
-Standalone AP – The board creates its own Wi‑Fi network; connect your phone or laptop and open the server URL.
-​
+Change pins and 128×32 vs 128×64 in `idf.py menuconfig` → *Board configuration*. Do not use GPIO 46 (input-only), GPIO 38/48 (RGB LED), or the SD SPI pins.
 
-Settings page – Open http://192.168.4.1/settings to change Wi‑Fi SSID, password, AP channel, max connections, optional join network (STA mode: device also connects to your router for LAN access), theme (Dark / Light), default view (Desktop / Mobile), web root folder name, and max upload size. Settings are stored in NVS and persist across reboots; saving triggers a reboot so new Wi‑Fi settings take effect. A Reboot now action restarts the device without changing settings.
-​
+## Build and flash
 
-Status page – Open http://192.168.4.1/status to see uptime, free heap, SD card free/total space, connected AP clients, STA IP (when joined to a network), and firmware version.
-​
+Install [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/) 5.x.
 
-Theme – Choose Dark or Light in Settings; the theme applies to the file list, Settings, and Status pages.
-​
+Activate the environment so `idf.py` is on your PATH:
 
-Mobile view – Set Default view to Mobile for larger touch targets and a mobile-friendly layout, or use the Mobile view / Desktop view link on any page to switch for the current session.
-​
+- **Windows:** Open “ESP-IDF x.x PowerShell” / CMD, or run `export.ps1` / `export.bat` in the IDF install.
+- **Linux / macOS:** `source $IDF_PATH/export.sh`
 
-Rename – Rename files and folders from the file list by entering a new name and clicking Rename in that row.
-​
-
-SD space in UI – The file browser shows SD: X MB free / Y MB (or “not mounted”) above the file table.
-​
-
-Optional OLED – Build with or without an SSD1306 128×64 I2C status display. Default firmware has no display driver; the OLED variant shows SSID, IP, SD status, and URL. See Firmware variants.
-​
-
-Hardware
-ESP32-S3 (any module with Wi‑Fi support).
-​
-
-microSD card (formatted FAT32) and a microSD SPI breakout.
-​
-
-Optional SSD1306 OLED (128×64, I2C) for on-device status. The default firmware is **without display**. See [Firmware variants](#firmware-variants) and [DISPLAY_WIRING.md](DISPLAY_WIRING.md).
-​
-
-Wiring (SPI) — ESP32-S3
-SD breakout	ESP32-S3
-GND	GND
-VCC / 3.3V	3.3V
-MISO	GPIO 12
-MOSI	GPIO 11
-SCK / CLK	GPIO 13
-CS	GPIO 5
-Pins are set in main/main.c; change PIN_NUM_* if your board uses different pins.
-​
-
-Optional OLED (I2C) — ESP32-S3
-SSD1306	ESP32-S3
-GND	GND
-VCC	3.3V
-SDA	GPIO 8
-SCL / SCK	GPIO 9
-Used only by the with-display firmware. Change pins in `idf.py menuconfig` (*Board configuration*).
-​
-
-Firmware variants
-There are two firmware options. The file server is the same in both; only the OLED driver is compiled in or left out.
-
-**Without display (default)** — use this if you have no OLED:
+From the project directory:
 
 ```bash
 idf.py set-target esp32s3
@@ -98,139 +69,72 @@ idf.py build
 idf.py -p <PORT> flash monitor
 ```
 
-**With display** — SSD1306 status screen (SSID, IP, SD, URL):
+Replace `<PORT>` with your serial port (for example `COM3` on Windows, `/dev/ttyUSB0` on Linux, `/dev/cu.usbmodem*` on macOS).
 
-```bash
-idf.py -B build-display -DWITH_DISPLAY=ON set-target esp32s3
-idf.py -B build-display -DWITH_DISPLAY=ON build
-idf.py -B build-display -p <PORT> flash monitor
-```
-
-You can also toggle it in an existing tree with `idf.py menuconfig` → *Board configuration* → *SSD1306 OLED status display (I2C)*. Keep the two CMake build directories if you want both binaries on disk at once.
-
-If you flash the OLED build with no screen attached, the server still starts; the serial log reports that the display was not found.
-
-Build and run
-Install ESP-IDF (version 5.x recommended).
-​
-
-Activate the ESP-IDF environment so idf.py is available:
-​
-
-Windows: Open the “ESP-IDF x.x PowerShell” or “ESP-IDF x.x CMD” shortcut from the Start Menu (created by the installer), or run the export.ps1 / export.bat script inside your ESP-IDF installation directory.
-​
-
-Linux / macOS: Run source $IDF_PATH/export.sh (or add it to your shell profile).
-​
-
-In the project directory (from that same shell), run the default **without display** build. For the OLED variant, see [Firmware variants](#firmware-variants).
-
-```bash
-idf.py set-target esp32s3
-idf.py build
-idf.py -p <PORT> flash monitor
-```
-
-Replace `<PORT>` with your serial port (for example COM3 on Windows or /dev/ttyUSB0 on Linux).
-
-**Release build (optimized for ESP32-S3):** From the same ESP-IDF shell, run:
+**Release build:**
 
 ```bash
 idf.py -DCMAKE_BUILD_TYPE=Release build
 ```
 
-Or use **build-release.bat** (Windows): it activates IDF with the project’s Python env, builds release, then merges bootloader + partition table + app into a single image. Pass `display` as the first argument for the OLED firmware (`build-release.bat display`).
+On Windows, `build-release.bat` activates IDF, builds release, and merges a single flash image.
 
-**Single flash image:** After any build, run `python merge_flash_bin.py` (or `python merge_flash_bin.py build-display` for the OLED variant) to create `vibe_pocket_file_server_flash.bin` in that build folder. Flash that one file with:
+**Single flash image:** after a build, `python merge_flash_bin.py` writes `build/vibe_pocket_file_server_flash.bin`. Flash it with:
 
 ```bash
 esptool.py -p <PORT> write_flash 0x0 build/vibe_pocket_file_server_flash.bin
 ```
 
-Otherwise use `idf.py -p <PORT> flash` to flash the separate binaries.
-​
+Or use `idf.py -p <PORT> flash`.
 
-Connect your phone or laptop to the device Wi‑Fi (default SSID Vibe Pocket, password esp32files; you can change this at http://192.168.4.1/settings), then open http://192.168.4.1 in a browser.
-​
+`build-and-flash.ps1` (PowerShell) prompts for the project directory and ESP-IDF path, cleans, sets target, and builds. It prints the flash command when the build succeeds.
 
-Optional: The repo includes build-and-flash.ps1 (PowerShell). Run it from any PowerShell; it prompts for the project directory and (if needed) your ESP-IDF path, removes the build folder, runs idf.py fullclean, sets target to esp32s3, and builds. Add `-WithDisplay` for the OLED firmware. When the build succeeds, the script tells you which flash command to run.
-​
+Connect to Wi‑Fi **Vibe Pocket** (password `esp32files`; change this in Settings), then open [http://192.168.4.1](http://192.168.4.1).
 
-Configuration
-From the web: Open http://192.168.4.1/settings to change Wi‑Fi SSID, password, AP channel (1–13), max connections (1–10), optional join network (STA SSID and password so the device also connects to your router), theme (Dark / Light), default view (Desktop / Mobile), web root folder name, and max upload size (1–32 MB). Changes are saved to flash and the device reboots after saving so the new Wi‑Fi settings apply.
-​
+If a phone says “No Internet”, that is normal. Type `192.168.4.1` in the browser. Prefer Safari or Chrome over the Wi‑Fi login popup if Settings will not save.
 
-In code (for SD pins only; the rest is set in Settings): edit main/main.c and set PIN_NUM_MISO, PIN_NUM_MOSI, PIN_NUM_CLK, and PIN_NUM_CS if your wiring differs. OLED SDA/SCL and I2C address are set in `idf.py menuconfig` when building with display.
-​
+## Configuration
 
-Editing the web UI on the SD card
-The file-browser page can be served from the SD card so you can change the layout and styles without reflashing.
-​
+**From the web:** [http://192.168.4.1/settings](http://192.168.4.1/settings)
 
-On the SD card root, create a folder: www.
-​
+- Wi‑Fi SSID, password, AP channel (1–13), max connections (1–10)
+- Optional join network (STA SSID and password)
+- Theme, default view, RGB LED pattern
+- OLED: on/off, contrast, invert, rotate 180°, per-line fields or a quick layout
+- Web root folder name, max upload size (1–32 MB)
 
-Copy web_template/www/index.html from this project into that folder so you have /sdcard/www/index.html. The template lives at the SD root; the file browser itself serves content under /sdcard/files/.
-​
+Display, LED, and theme apply as soon as you save. Wi‑Fi / join-network changes reboot.
 
-Edit index.html on the SD card (on a PC or via the upload feature). You can change the HTML, CSS, and upload script.
-​
+**In code:** SD pins in `main/main.c`. OLED SDA/SCL, I2C address, and panel size in `idf.py menuconfig`.
 
-The server injects the file list at {{FILE_LIST}}, the current path at {{CURRENT_PATH}}, and the raw path value for the “New folder” form at {{CURRENT_PATH_VALUE}}. Keep those placeholders if you want those dynamic values.
-​
+## Editing the web UI on the SD card
 
-If the file is missing or invalid, the server falls back to the built-in page.
-​
+The file-browser page can be served from the SD card so you can change layout and styles without reflashing.
 
-Speed and safety: Serving the page from SD is slightly slower than the built-in version (one small file read per request), but for typical use it is negligible. The firmware always keeps an embedded fallback, so the device still works if the SD file is removed or corrupted.
-​
+1. On the SD card root, create `www`.
+2. Copy `web_template/www/index.html` from this project to `/sdcard/www/index.html`. The file browser itself serves content under `/sdcard/files/`.
+3. Edit that file (HTML, CSS, upload script). Keep `{{FILE_LIST}}`, `{{CURRENT_PATH}}`, and `{{CURRENT_PATH_VALUE}}`.
 
-Notes
-The site opens in /sdcard/files by default; the files directory is created automatically if it is missing.
-​
+If the file is missing or invalid, the firmware falls back to the built-in page.
 
-Browsing and uploads stay under this folder so you are not dropped at the SD root.
-​
+## Notes
 
-On first run, insert and format the SD card as FAT32 before powering the board for full file-server use.
-​
+- The site opens in `/sdcard/files` by default; that directory is created if missing.
+- Browse and upload stay under this folder so you are not dropped at the SD root.
+- Format the SD card as FAT32 before first use.
+- If the card fails to mount, HTTP still starts; upload and delete error until you insert a card and reset.
+- Large files use chunked transfer. Names with spaces or special characters are URL-encoded and sanitized for FAT.
+- Directory listings are sorted alphabetically, directories first.
+- Responses include `X-Content-Type-Options`, `X-Frame-Options`, and `Cache-Control`.
 
-If the SD card fails to mount (wrong wiring, bad card, or no card), the HTTP server still starts. Opening http://192.168.4.1 shows a built-in “No SD card mounted” page; upload and delete operations return an error until you insert a card and reset.
-​
+## Troubleshooting
 
-The server uses chunked transfer for large files to limit RAM use; filenames with spaces or special characters are supported (URL-encoded by the browser and sanitized for FAT).
-​
+**Build fails at `sections.ld` / ldgen** (for example error `-1073741819` on Windows): the linker script generator crashed. Build from the ESP-IDF 5.x shell only. Delete `build`, run `idf.py fullclean`, then `idf.py set-target esp32s3` and `idf.py build`. On Windows, a shorter project path can help. Repair the IDF Python environment if `pyparsing` errors appear.
 
-Files and folders in directory listings are sorted alphabetically with directories appearing first for easier navigation.
-​
+**OLED is blank:** check 3.3V (not 5V), SDA=18 / SCL=17, address 0x3C vs 0x3D, and 128×32 vs 128×64 in menuconfig. Settings → Screen must be On. Serial log reports if the panel was not found.
 
-Security headers (X-Content-Type-Options, X-Frame-Options, Cache-Control) are included in HTTP responses for improved security.
-​
+**Save on Settings does nothing:** open Safari or Chrome to `http://192.168.4.1/settings` instead of the phone’s Wi‑Fi popup.
 
-Troubleshooting
-Build fails at sections.ld / ldgen (for example error code -1073741819 on Windows)
-This usually means the linker script generator (ldgen.py) crashed (access violation) or hit a Python/pyparsing error. Try:
-​
-
-Use the ESP-IDF environment
-Always build from the ESP-IDF 5.x PowerShell (or the shell where you ran the ESP-IDF export script). Do not mix a normal shell with an ESP-IDF one.
-​
-
-Full clean and rebuild
-Delete the build folder, run idf.py fullclean, then idf.py set-target esp32s3 and idf.py build again.
-​
-
-Shorter project path
-On Windows, the ldgen command line can be very long. If your project path is long, copy or clone the project to a shorter path (for example from D:\DEV\ESP_File_Server to D:\ESP\FS) and build there.
-​
-
-Repair the ESP-IDF Python environment
-The crash can be due to an incompatible pyparsing or Python version in the IDF virtualenv. Re-run the ESP-IDF installer and choose “Repair” or “Reconfigure Python environment”, or recreate the IDF 5.x environment with the recommended Python version.
-​
-
-Check the real error
-From the project directory, run the same command that failed (see build/CMakeFiles/sections.ld-*.bat), or run idf.py build and inspect build/log/idf_py_stderr_output_*.log for a Python traceback. That message (for example a pyparsing TypeError) points to the exact fix.
-​
 ## License
 
 Unlicense / CC0-1.0.
