@@ -37,7 +37,7 @@ If the board will not enter download mode, hold the encoder button (GPIO 0) whil
 | WS2812 | 14 | 8 LEDs |
 | CC1101 CS | 12 | Held high; radio unused |
 
-Landscape 320×170 (LilyGO `display.begin(3)`). Status header plus six lines, same Settings fields as the web UI. **Click the encoder** for an on-device settings menu (Wi‑Fi, display, LED, theme, reboot). Turn to move, click to select, hold to go back. Screen Off in Settings turns the backlight off.
+Landscape 320×170 (LilyGO `display.begin(3)`). Status header plus six lines, same Settings fields as the web UI. **Click the encoder** for Settings. Turn to move, click to open or adjust (turn then click to keep), **Home** / **Back** or hold to go up a level. **Display → Scroll** reverses the knob. **Power** can reboot or shut down (PWR_EN off, then deep sleep; plug USB or use the power button to wake). Screen Off in Settings turns the backlight off.
 
 Do **not** drive GPIO 38 or 48 as a DevKit LED. Those pins are CC1101 band select (`SW0`/`IO2`).
 
@@ -47,4 +47,4 @@ LilyGO reports better results with **SanDisk cards 32GB or smaller**, FAT32. If 
 
 ## What it does not do
 
-No Sub-GHz TX/RX, NFC, IR, encoder UI, or audio. If you want those, use [LilyGO’s examples](https://github.com/Xinyuan-LilyGO/T-Embed-CC1101) or a project such as Bruce.
+No Sub-GHz TX/RX, NFC, IR, or audio. If you want those, use [LilyGO’s examples](https://github.com/Xinyuan-LilyGO/T-Embed-CC1101) or a project such as Bruce.

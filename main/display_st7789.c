@@ -12,6 +12,7 @@
 #include "board.h"
 
 #include "driver/gpio.h"
+#include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
@@ -42,7 +43,14 @@ static uint8_t s_enabled = 1;
 static uint8_t s_contrast = DISPLAY_CONTRAST_MED;
 static uint8_t s_invert;
 static uint8_t s_rotate;
+static uint8_t s_hw_on = 0xFF;
+static uint8_t s_hw_inv = 0xFF;
+static uint8_t s_hw_rot = 0xFF;
+static char s_status_cache[6][32];
+static int s_status_cache_n = -1;
+static uint16_t s_status_cache_key;
 static SemaphoreHandle_t s_mutex;
+static SemaphoreHandle_t s_xfer_done;
 
 static void display_lock(void)
 {
@@ -61,9 +69,57 @@ static void display_unlock(void)
     }
 }
 
+static bool IRAM_ATTR on_color_done(esp_lcd_panel_io_handle_t io,
+                                    esp_lcd_panel_io_event_data_t *edata,
+                                    void *ctx)
+{
+    (void)io;
+    (void)edata;
+    (void)ctx;
+    BaseType_t hp = pdFALSE;
+    if (s_xfer_done) {
+        xSemaphoreGiveFromISR(s_xfer_done, &hp);
+    }
+    return hp == pdTRUE;
+}
+
+static void line_wait(void)
+{
+    if (s_xfer_done) {
+        xSemaphoreTake(s_xfer_done, pdMS_TO_TICKS(100));
+    }
+}
+
 uint16_t display_rgb(uint8_t r, uint8_t g, uint8_t b)
 {
     return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+}
+
+static uint16_t mix565(uint16_t fg, uint16_t bg, unsigned t)
+{
+    if (t == 0) {
+        return bg;
+    }
+    if (t >= 3) {
+        return fg;
+    }
+    unsigned fr = (fg >> 11) & 0x1F;
+    unsigned fg6 = (fg >> 5) & 0x3F;
+    unsigned fb = fg & 0x1F;
+    unsigned br = (bg >> 11) & 0x1F;
+    unsigned bg6 = (bg >> 5) & 0x3F;
+    unsigned bb = bg & 0x1F;
+    unsigned r = (fr * t + br * (3 - t)) / 3;
+    unsigned g = (fg6 * t + bg6 * (3 - t)) / 3;
+    unsigned b = (fb * t + bb * (3 - t)) / 3;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static unsigned glyph_level(const uint8_t *glyph, int row, int col)
+{
+    unsigned bit = (unsigned)col * DISPLAY_FONT_BPP;
+    unsigned byte = glyph[row * DISPLAY_FONT_ROW_BYTES + (bit / 8)];
+    return (byte >> (bit % 8)) & 0x3u;
 }
 
 static void contrast_scale(uint8_t *r, uint8_t *g, uint8_t *b)
@@ -124,6 +180,7 @@ static void fill_span(int x, int y, int w, int h, uint16_t color)
             bh = max_rows;
         }
         int n = w * bh;
+        line_wait();
         for (int i = 0; i < n; i++) {
             s_line[i] = color;
         }
@@ -138,7 +195,10 @@ bool display_ui_busy(void)
 
 void display_ui_set_busy(bool busy)
 {
+    display_lock();
     s_ui_busy = busy;
+    s_status_cache_n = -1;
+    display_unlock();
 }
 
 int display_font_w(void)
@@ -165,34 +225,55 @@ void display_fill_rect(int x, int y, int w, int h, uint16_t color)
     display_unlock();
 }
 
-void display_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
+static void blit_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
 {
     if (!s_panel || !s_line || !s || y < 0 || y + DISPLAY_FONT_H > LCD_V_RES) {
         return;
     }
-    display_lock();
-    while (*s && x < LCD_H_RES) {
-        unsigned c = (unsigned char)*s++;
+    if (x < 0) {
+        x = 0;
+    }
+    int max_w = LCD_H_RES - x;
+    if (max_w <= 0) {
+        return;
+    }
+    int nchars = 0;
+    for (const char *p = s; *p && (nchars + 1) * DISPLAY_FONT_W <= max_w; p++) {
+        nchars++;
+    }
+    if (nchars <= 0) {
+        return;
+    }
+    int w = nchars * DISPLAY_FONT_W;
+    uint16_t lut[4] = {
+        bg,
+        mix565(fg, bg, 1),
+        mix565(fg, bg, 2),
+        fg,
+    };
+
+    line_wait();
+    for (int ci = 0; ci < nchars; ci++) {
+        unsigned c = (unsigned char)s[ci];
         if (c < DISPLAY_FONT_FIRST || c >= DISPLAY_FONT_FIRST + DISPLAY_FONT_COUNT) {
             c = '?';
         }
         const uint8_t *glyph = display_font_bits[c - DISPLAY_FONT_FIRST];
-        int w = DISPLAY_FONT_W;
-        if (x + w > LCD_H_RES) {
-            w = LCD_H_RES - x;
-        }
-        if (w <= 0) {
-            break;
-        }
+        int gx = ci * DISPLAY_FONT_W;
         for (int row = 0; row < DISPLAY_FONT_H; row++) {
-            uint16_t bits = (uint16_t)glyph[row * 2] | ((uint16_t)glyph[row * 2 + 1] << 8);
-            for (int col = 0; col < w; col++) {
-                s_line[row * w + col] = (bits & (1u << col)) ? fg : bg;
+            uint16_t *dst = &s_line[row * w + gx];
+            for (int col = 0; col < DISPLAY_FONT_W; col++) {
+                dst[col] = lut[glyph_level(glyph, row, col)];
             }
         }
-        esp_lcd_panel_draw_bitmap(s_panel, x, y, x + w, y + DISPLAY_FONT_H, s_line);
-        x += DISPLAY_FONT_W;
     }
+    esp_lcd_panel_draw_bitmap(s_panel, x, y, x + w, y + DISPLAY_FONT_H, s_line);
+}
+
+void display_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
+{
+    display_lock();
+    blit_text(x, y, s, fg, bg);
     display_unlock();
 }
 
@@ -209,11 +290,20 @@ static void apply_panel_settings(void)
     if (!s_panel) {
         return;
     }
-    apply_rotation();
-    esp_lcd_panel_invert_color(s_panel, s_invert ? false : true);
-    backlight_set(s_enabled != 0);
-    if (!s_enabled) {
-        fill_span(0, 0, LCD_H_RES, LCD_V_RES, 0x0000);
+    if (s_hw_rot != s_rotate) {
+        apply_rotation();
+        s_hw_rot = s_rotate;
+    }
+    if (s_hw_inv != s_invert) {
+        esp_lcd_panel_invert_color(s_panel, s_invert ? false : true);
+        s_hw_inv = s_invert;
+    }
+    if (s_hw_on != s_enabled) {
+        backlight_set(s_enabled != 0);
+        s_hw_on = s_enabled;
+        if (!s_enabled) {
+            fill_span(0, 0, LCD_H_RES, LCD_V_RES, 0x0000);
+        }
     }
 }
 
@@ -236,6 +326,13 @@ int display_status_init(void)
         return ESP_OK;
     }
 
+    if (!s_xfer_done) {
+        s_xfer_done = xSemaphoreCreateBinary();
+        if (s_xfer_done) {
+            xSemaphoreGive(s_xfer_done);
+        }
+    }
+
     gpio_config_t bl = {
         .mode = GPIO_MODE_OUTPUT,
         .pin_bit_mask = 1ULL << CONFIG_DISPLAY_ST7789_BL_GPIO,
@@ -256,6 +353,7 @@ int display_status_init(void)
         .lcd_param_bits = 8,
         .spi_mode = 0,
         .trans_queue_depth = 10,
+        .on_color_trans_done = on_color_done,
     };
     ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BOARD_SPI_HOST, &io_config, &s_io);
     if (ret != ESP_OK) {
@@ -266,6 +364,7 @@ int display_status_init(void)
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = -1,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .data_endian = LCD_RGB_DATA_ENDIAN_LITTLE,
         .bits_per_pixel = 16,
     };
     ret = esp_lcd_new_panel_st7789(s_io, &panel_config, &s_panel);
@@ -299,11 +398,8 @@ int display_status_init(void)
 
 void display_status_update(const char *const *lines, unsigned count)
 {
-    if (s_ui_busy || !s_enabled) {
-        return;
-    }
     display_lock();
-    if (!s_panel || !s_line) {
+    if (s_ui_busy || !s_enabled || !s_panel || !s_line) {
         display_unlock();
         return;
     }
@@ -326,26 +422,39 @@ void display_status_update(const char *const *lines, unsigned count)
         bg_c = tmp;
     }
 
-    fill_span(0, 0, LCD_H_RES, LCD_V_RES, bg_c);
-    fill_span(0, 0, LCD_H_RES, DISPLAY_FONT_H + 4, head_bg);
-    display_unlock();
-
-    display_text(8, 2, "Vibe Pocket", accent, head_bg);
-
     unsigned n = count;
     if (n > 6) {
         n = 6;
     }
+    uint16_t key = (uint16_t)(fg_c ^ bg_c ^ head_bg ^ accent ^ (s_contrast << 8) ^ s_invert);
+    bool full = (s_status_cache_n != (int)n) || (s_status_cache_key != key);
+
+    if (full) {
+        fill_span(0, 0, LCD_H_RES, LCD_V_RES, bg_c);
+        fill_span(0, 0, LCD_H_RES, DISPLAY_FONT_H + 4, head_bg);
+        blit_text(8, 2, "Vibe Pocket", accent, head_bg);
+    }
+
     int y = DISPLAY_FONT_H + 8;
     for (unsigned i = 0; i < n; i++) {
         const char *row = (lines && lines[i]) ? lines[i] : "";
-        display_text(8, y, row, fg_c, bg_c);
+        if (full || strncmp(s_status_cache[i], row, sizeof(s_status_cache[i]) - 1) != 0) {
+            fill_span(0, y, LCD_H_RES, DISPLAY_FONT_H, bg_c);
+            blit_text(8, y, row, fg_c, bg_c);
+            strncpy(s_status_cache[i], row, sizeof(s_status_cache[i]) - 1);
+            s_status_cache[i][sizeof(s_status_cache[i]) - 1] = '\0';
+        }
         y += DISPLAY_FONT_H;
         if (y + DISPLAY_FONT_H > LCD_V_RES - 18) {
             break;
         }
     }
-    display_text(8, LCD_V_RES - DISPLAY_FONT_H - 2, "Click knob: Settings", mute, bg_c);
+    if (full) {
+        blit_text(8, LCD_V_RES - DISPLAY_FONT_H - 2, "Click knob: Settings", mute, bg_c);
+    }
+    s_status_cache_n = (int)n;
+    s_status_cache_key = key;
+    display_unlock();
 }
 
 #endif /* CONFIG_DISPLAY_ST7789 */

@@ -23,6 +23,7 @@ typedef struct {
     uint8_t disp_contrast;
     uint8_t disp_invert;
     uint8_t disp_rotate;
+    uint8_t enc_rev;         /* 1 = reverse encoder scroll */
     uint8_t disp_line[DISPLAY_LINE_MAX];
 } app_config_t;
 

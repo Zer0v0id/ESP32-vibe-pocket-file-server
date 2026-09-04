@@ -3,6 +3,7 @@
 
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 
 static const char *TAG = "board";
 static bool s_spi_ready;
@@ -71,4 +72,14 @@ void board_spi_bus_release_if_unused(void)
         s_spi_ready = false;
     }
 #endif
+}
+
+void board_power_off(void)
+{
+#if CONFIG_BOARD_T_EMBED_CC1101
+    gpio_set_level((gpio_num_t)CONFIG_DISPLAY_ST7789_BL_GPIO, 0);
+    gpio_set_level((gpio_num_t)CONFIG_BOARD_PWR_EN_GPIO, 0);
+    ESP_LOGI(TAG, "PWR_EN low, entering deep sleep");
+#endif
+    esp_deep_sleep_start();
 }

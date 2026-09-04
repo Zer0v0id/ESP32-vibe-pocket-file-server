@@ -4,6 +4,7 @@
 #if CONFIG_BOARD_T_EMBED_CC1101
 
 #include "app_settings.h"
+#include "board.h"
 #include "display.h"
 #include "status_led.h"
 
@@ -28,12 +29,14 @@ static const char *TAG = "ui_menu";
 #define UI_DISP   3
 #define UI_LED    4
 #define UI_EDIT   5
+#define UI_POWER  6
 
 #define EDIT_SSID 0
 #define EDIT_PASS 1
 
 static int s_screen = UI_STATUS;
 static int s_sel;
+static int s_adjust;
 static int s_edit_kind;
 static char s_edit[65];
 static int s_edit_pos;
@@ -53,7 +56,7 @@ _Static_assert(sizeof(k_led_short) / sizeof(k_led_short[0]) == STATUS_LED_MODE_M
                "LED short labels must match STATUS_LED_MODE_MAX");
 
 static const char *k_root[] = {
-    "Wi-Fi", "Display", "LED pattern", "Theme", "Reboot", "Back",
+    "Wi-Fi", "Display", "LED pattern", "Theme", "Power", "Home",
 };
 #define ROOT_N 6
 
@@ -63,9 +66,16 @@ static const char *k_wifi[] = {
 #define WIFI_N 6
 
 static const char *k_disp[] = {
-    "Screen", "Contrast", "Colors", "Rotate", "Back",
+    "Screen", "Contrast", "Colors", "Rotate", "Scroll", "Back",
 };
-#define DISP_N 5
+#define DISP_N 6
+
+static const char *k_power[] = {
+    "Reboot", "Shut down", "Back",
+};
+#define POWER_N 3
+#define LED_BACK (STATUS_LED_MODE_MAX + 1)
+#define LED_N    (STATUS_LED_MODE_MAX + 2)
 
 static const char k_ssid_cs[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_.";
@@ -152,6 +162,9 @@ static void disp_value(int item, char *out, size_t n)
     case 3:
         snprintf(out, n, c->disp_rotate ? "180 deg" : "Normal");
         break;
+    case 4:
+        snprintf(out, n, c->enc_rev ? "Reverse" : "Normal");
+        break;
     default:
         out[0] = '\0';
         break;
@@ -169,24 +182,30 @@ static void paint(void)
                 snprintf(val, sizeof(val), "%s", app_config_get()->theme ? "Light" : "Dark");
                 draw_row(i, i == s_sel, k_root[i], val);
             } else {
-                draw_row(i, i == s_sel, k_root[i], i < 3 ? ">" : "");
+                draw_row(i, i == s_sel, k_root[i], (i == 5) ? "" : ">");
             }
         }
-        draw_footer("Turn  Click  Hold=back");
+        draw_footer(s_adjust ? "Turn to change  Click to keep" : "Click to open  Hold = Home");
     } else if (s_screen == UI_WIFI) {
         draw_header("Wi-Fi");
         for (int i = 0; i < WIFI_N; i++) {
             wifi_value(i, val, sizeof(val));
             draw_row(i, i == s_sel, k_wifi[i], val);
         }
-        draw_footer("SSID/pass: click to edit");
+        draw_footer(s_adjust ? "Turn to change  Click to keep" : "Click to select  Hold = Back");
     } else if (s_screen == UI_DISP) {
         draw_header("Display");
         for (int i = 0; i < DISP_N; i++) {
             disp_value(i, val, sizeof(val));
             draw_row(i, i == s_sel, k_disp[i], val);
         }
-        draw_footer("Click to change");
+        draw_footer(s_adjust ? "Turn to change  Click to keep" : "Click to adjust  Hold = Back");
+    } else if (s_screen == UI_POWER) {
+        draw_header("Power");
+        for (int i = 0; i < POWER_N; i++) {
+            draw_row(i, i == s_sel, k_power[i], "");
+        }
+        draw_footer("Click to select  Hold = Back");
     } else if (s_screen == UI_LED) {
         draw_header("LED pattern");
         app_config_t *c = app_config_get();
@@ -194,20 +213,24 @@ static void paint(void)
         if (first < 0) {
             first = 0;
         }
-        if (first > STATUS_LED_MODE_MAX - 4) {
-            first = STATUS_LED_MODE_MAX - 4;
+        if (first > LED_N - 5) {
+            first = LED_N - 5;
         }
         if (first < 0) {
             first = 0;
         }
         for (int row = 0; row < 5; row++) {
             int mode = first + row;
-            if (mode > STATUS_LED_MODE_MAX) {
+            if (mode >= LED_N) {
                 break;
             }
-            draw_row(row, mode == s_sel, k_led_short[mode], mode == c->led_mode ? "*" : "");
+            if (mode == LED_BACK) {
+                draw_row(row, mode == s_sel, "Back", "");
+            } else {
+                draw_row(row, mode == s_sel, k_led_short[mode], mode == c->led_mode ? "*" : "");
+            }
         }
-        draw_footer("Click to apply");
+        draw_footer("Click to apply  Hold = Back");
     } else if (s_screen == UI_EDIT) {
         draw_header(s_edit_kind == EDIT_SSID ? "Edit SSID" : "Edit password");
         char shown[28];
@@ -240,12 +263,14 @@ static void enter_menu(void)
     display_ui_set_busy(true);
     s_screen = UI_ROOT;
     s_sel = 0;
+    s_adjust = 0;
     s_idle_at = xTaskGetTickCount();
     paint();
 }
 
 static void leave_menu(void)
 {
+    s_adjust = 0;
     s_screen = UI_STATUS;
     display_ui_set_busy(false);
     app_display_refresh();
@@ -323,14 +348,98 @@ static void finish_edit(void)
     paint();
 }
 
+static void go_back(void)
+{
+    s_adjust = 0;
+    if (s_screen == UI_STATUS) {
+        return;
+    }
+    if (s_screen == UI_ROOT) {
+        leave_menu();
+        return;
+    }
+    if (s_screen == UI_WIFI) {
+        s_screen = UI_ROOT;
+        s_sel = 0;
+    } else if (s_screen == UI_DISP) {
+        s_screen = UI_ROOT;
+        s_sel = 1;
+    } else if (s_screen == UI_LED) {
+        s_screen = UI_ROOT;
+        s_sel = 2;
+    } else if (s_screen == UI_POWER) {
+        s_screen = UI_ROOT;
+        s_sel = 4;
+    } else if (s_screen == UI_EDIT) {
+        s_screen = UI_WIFI;
+        s_sel = s_edit_kind;
+    }
+    paint();
+}
+
+static void adjust_value(int dir)
+{
+    app_config_t *c = app_config_get();
+    if (s_screen == UI_ROOT && s_sel == 3) {
+        c->theme = c->theme ? 0 : 1;
+        save_live();
+        return;
+    }
+    if (s_screen == UI_WIFI) {
+        if (s_sel == 2) {
+            int ch = (int)c->wifi_channel + dir;
+            if (ch < 1) {
+                ch = 13;
+            }
+            if (ch > 13) {
+                ch = 1;
+            }
+            c->wifi_channel = (uint8_t)ch;
+        } else if (s_sel == 3) {
+            int n = (int)c->wifi_max_conn + dir;
+            if (n < 1) {
+                n = 10;
+            }
+            if (n > 10) {
+                n = 1;
+            }
+            c->wifi_max_conn = (uint8_t)n;
+        }
+        return;
+    }
+    if (s_screen == UI_DISP) {
+        if (s_sel == 0) {
+            c->disp_on = c->disp_on ? 0 : 1;
+        } else if (s_sel == 1) {
+            c->disp_contrast = (uint8_t)((c->disp_contrast + (dir > 0 ? 1 : 2)) % 3);
+        } else if (s_sel == 2) {
+            c->disp_invert = c->disp_invert ? 0 : 1;
+        } else if (s_sel == 3) {
+            c->disp_rotate = c->disp_rotate ? 0 : 1;
+        } else if (s_sel == 4) {
+            c->enc_rev = c->enc_rev ? 0 : 1;
+        }
+        save_live();
+        display_ui_set_busy(true);
+    }
+}
+
 static void on_turn(int dir)
 {
     s_idle_at = xTaskGetTickCount();
     if (s_screen == UI_STATUS) {
         return;
     }
+    if (app_config_get()->enc_rev) {
+        dir = -dir;
+    }
     if (s_screen == UI_EDIT) {
         cycle_char(dir);
+        paint();
+        return;
+    }
+    if (s_adjust) {
+        adjust_value(dir);
         paint();
         return;
     }
@@ -342,7 +451,9 @@ static void on_turn(int dir)
     } else if (s_screen == UI_DISP) {
         max = DISP_N;
     } else if (s_screen == UI_LED) {
-        max = STATUS_LED_MODE_MAX + 1;
+        max = LED_N;
+    } else if (s_screen == UI_POWER) {
+        max = POWER_N;
     }
     s_sel += dir;
     if (s_sel < 0) {
@@ -350,10 +461,6 @@ static void on_turn(int dir)
     }
     if (s_sel >= max) {
         s_sel = 0;
-    }
-    if (s_screen == UI_LED) {
-        app_config_get()->led_mode = (uint8_t)s_sel;
-        status_led_set_mode((uint8_t)s_sel);
     }
     paint();
 }
@@ -374,9 +481,17 @@ static void on_click(void)
             }
         } else if (s_edit_pos < max - 1) {
             s_edit_pos++;
-            if (s_edit[s_edit_pos] == '\0') {
-                /* stay on terminator so turn can append */
-            }
+        }
+        paint();
+        return;
+    }
+    if (s_adjust) {
+        s_adjust = 0;
+        if (s_screen == UI_WIFI && (s_sel == 2 || s_sel == 3)) {
+            /* Channel / max clients apply on Save Wi-Fi. */
+        } else {
+            save_live();
+            display_ui_set_busy(true);
         }
         paint();
         return;
@@ -396,12 +511,11 @@ static void on_click(void)
             s_sel = app_config_get()->led_mode;
             break;
         case 3:
-            app_config_get()->theme = app_config_get()->theme ? 0 : 1;
-            save_live();
+            s_adjust = 1;
             break;
         case 4:
-            (void)app_settings_save();
-            esp_restart();
+            s_screen = UI_POWER;
+            s_sel = 0;
             break;
         default:
             leave_menu();
@@ -411,7 +525,6 @@ static void on_click(void)
         return;
     }
     if (s_screen == UI_WIFI) {
-        app_config_t *c = app_config_get();
         switch (s_sel) {
         case 0:
             start_edit(EDIT_SSID);
@@ -420,10 +533,8 @@ static void on_click(void)
             start_edit(EDIT_PASS);
             return;
         case 2:
-            c->wifi_channel = (uint8_t)(c->wifi_channel >= 13 ? 1 : c->wifi_channel + 1);
-            break;
         case 3:
-            c->wifi_max_conn = (uint8_t)(c->wifi_max_conn >= 10 ? 1 : c->wifi_max_conn + 1);
+            s_adjust = 1;
             break;
         case 4:
             (void)app_settings_save();
@@ -432,40 +543,44 @@ static void on_click(void)
             esp_restart();
             break;
         default:
-            s_screen = UI_ROOT;
-            s_sel = 0;
-            break;
+            go_back();
+            return;
         }
         paint();
         return;
     }
     if (s_screen == UI_DISP) {
-        app_config_t *c = app_config_get();
-        switch (s_sel) {
-        case 0:
-            c->disp_on = c->disp_on ? 0 : 1;
-            break;
-        case 1:
-            c->disp_contrast = (uint8_t)((c->disp_contrast + 1) % 3);
-            break;
-        case 2:
-            c->disp_invert = c->disp_invert ? 0 : 1;
-            break;
-        case 3:
-            c->disp_rotate = c->disp_rotate ? 0 : 1;
-            break;
-        default:
-            s_screen = UI_ROOT;
-            s_sel = 1;
-            paint();
+        if (s_sel >= 5) {
+            go_back();
             return;
         }
-        save_live();
-        display_ui_set_busy(true);
+        s_adjust = 1;
         paint();
         return;
     }
+    if (s_screen == UI_POWER) {
+        if (s_sel == 0) {
+            (void)app_settings_save();
+            draw_header("Rebooting...");
+            vTaskDelay(pdMS_TO_TICKS(400));
+            esp_restart();
+        } else if (s_sel == 1) {
+            (void)app_settings_save();
+            status_led_set_mode(STATUS_LED_MODE_OFF);
+            display_clear(display_rgb(0x12, 0x12, 0x22));
+            draw_header("Shutting down");
+            vTaskDelay(pdMS_TO_TICKS(500));
+            board_power_off();
+        } else {
+            go_back();
+        }
+        return;
+    }
     if (s_screen == UI_LED) {
+        if (s_sel == LED_BACK) {
+            go_back();
+            return;
+        }
         app_config_get()->led_mode = (uint8_t)s_sel;
         save_live();
         display_ui_set_busy(true);
@@ -484,13 +599,12 @@ static void on_hold(void)
         finish_edit();
         return;
     }
-    if (s_screen == UI_ROOT) {
-        leave_menu();
+    if (s_adjust) {
+        s_adjust = 0;
+        paint();
         return;
     }
-    s_screen = UI_ROOT;
-    s_sel = 0;
-    paint();
+    go_back();
 }
 
 static int enc_state(void)

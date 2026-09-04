@@ -74,6 +74,7 @@ static const char *TAG = "file_server";
 #define NVS_KEY_DISP_CON        "disp_con"
 #define NVS_KEY_DISP_INV        "disp_inv"
 #define NVS_KEY_DISP_ROT        "disp_rot"
+#define NVS_KEY_ENC_REV         "enc_rev"
 #define NVS_KEY_DISP_LINES      "disp_ln"
 #define NVS_KEY_DISP_LAY        "disp_lay"
 
@@ -142,6 +143,7 @@ static void settings_set_defaults(void)
     s_config.disp_contrast = DISPLAY_CONTRAST_MED;
     s_config.disp_invert = 0;
     s_config.disp_rotate = 0;
+    s_config.enc_rev = 0;
     s_config.disp_line[0] = DISP_FIELD_TITLE;
     s_config.disp_line[1] = DISP_FIELD_SSID;
     s_config.disp_line[2] = DISP_FIELD_IP;
@@ -207,6 +209,8 @@ static void settings_load(void)
         s_config.disp_invert = u8;
     if (nvs_get_u8(h, NVS_KEY_DISP_ROT, &u8) == ESP_OK && u8 <= 1)
         s_config.disp_rotate = u8;
+    if (nvs_get_u8(h, NVS_KEY_ENC_REV, &u8) == ESP_OK && u8 <= 1)
+        s_config.enc_rev = u8;
     {
         uint8_t lines[DISPLAY_LINE_MAX];
         size_t blen = sizeof(lines);
@@ -259,6 +263,7 @@ static esp_err_t settings_save(void)
     nvs_set_u8(h, NVS_KEY_DISP_CON, s_config.disp_contrast);
     nvs_set_u8(h, NVS_KEY_DISP_INV, s_config.disp_invert);
     nvs_set_u8(h, NVS_KEY_DISP_ROT, s_config.disp_rotate);
+    nvs_set_u8(h, NVS_KEY_ENC_REV, s_config.enc_rev);
     err = nvs_set_blob(h, NVS_KEY_DISP_LINES, s_config.disp_line, sizeof(s_config.disp_line));
     if (err != ESP_OK) {
         nvs_close(h);
@@ -1840,6 +1845,12 @@ static void settings_parse_display_fields(const char *body)
             s_config.disp_rotate = (uint8_t)v;
         }
     }
+    if (parse_form_value(body, "enc_rev", val, sizeof(val))) {
+        int v = atoi(val);
+        if (v == 0 || v == 1) {
+            s_config.enc_rev = (uint8_t)v;
+        }
+    }
     for (unsigned i = 0; i < DISPLAY_LINE_MAX; i++) {
         char key[12];
         snprintf(key, sizeof(key), "disp_l%u", i);
@@ -1874,7 +1885,9 @@ static void settings_apply_display_live(void)
     display_configure(s_config.disp_on, s_config.disp_contrast, s_config.disp_invert,
                       s_config.disp_rotate);
     display_apply();
-    push_display_status();
+    if (!display_ui_busy()) {
+        push_display_status();
+    }
 }
 
 static int copy_settings_query(httpd_req_t *req, char *q, size_t qlen)
@@ -1990,6 +2003,12 @@ static esp_err_t settings_path_save_handler(httpd_req_t *req)
             int m = atoi(val);
             if (m >= VIEW_DESKTOP && m <= VIEW_MOBILE) {
                 s_config.mobile_default = (uint8_t)m;
+            }
+        }
+        if (parse_form_value(q, "enc_rev", val, sizeof(val))) {
+            int v = atoi(val);
+            if (v == 0 || v == 1) {
+                s_config.enc_rev = (uint8_t)v;
             }
         }
     }
@@ -2126,12 +2145,20 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         "<label>Contrast</label><select name=\"disp_con\">"
         "<option value=\"0\"%s>Low</option><option value=\"1\"%s>Medium (default)</option><option value=\"2\"%s>High</option></select>"
         "<label>Colors</label><select name=\"disp_inv\"><option value=\"0\"%s>Normal</option><option value=\"1\"%s>Inverted</option></select>"
-        "<label>Orientation</label><select name=\"disp_rot\"><option value=\"0\"%s>Normal</option><option value=\"1\"%s>Rotate 180°</option></select>",
+        "<label>Orientation</label><select name=\"disp_rot\"><option value=\"0\"%s>Normal</option><option value=\"1\"%s>Rotate 180°</option></select>"
+#if CONFIG_BOARD_T_EMBED_CC1101
+        "<label>Knob scroll</label><select name=\"enc_rev\"><option value=\"0\"%s>Normal</option><option value=\"1\"%s>Reverse</option></select>"
+#endif
+        ,
         s_config.disp_on ? " selected" : "", s_config.disp_on ? "" : " selected",
         s_config.disp_contrast == 0 ? " selected" : "", s_config.disp_contrast == 1 ? " selected" : "",
         s_config.disp_contrast == 2 ? " selected" : "",
         s_config.disp_invert ? "" : " selected", s_config.disp_invert ? " selected" : "",
-        s_config.disp_rotate ? "" : " selected", s_config.disp_rotate ? " selected" : "");
+        s_config.disp_rotate ? "" : " selected", s_config.disp_rotate ? " selected" : ""
+#if CONFIG_BOARD_T_EMBED_CC1101
+        , s_config.enc_rev ? "" : " selected", s_config.enc_rev ? " selected" : ""
+#endif
+        );
     if (n < 0 || (size_t)n >= cap) {
         free(page);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Buffer error");
@@ -2169,7 +2196,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         "document.getElementById('df').addEventListener('submit',function(e){"
         "var f=e.target;"
         "var p=f.disp_preset.value;"
-        "f.action='/s/'+f.led_mode.value+'/'+f.disp_on.value+'/'+f.disp_con.value+'/'+f.disp_inv.value+'/'+f.disp_rot.value+'/'+f.disp_l0.value+'/'+f.disp_l1.value+'/'+f.disp_l2.value+'/'+f.disp_l3.value+(p?('/p/'+p):'');"
+        "var r=f.enc_rev?f.enc_rev.value:'0';"
+        "f.action='/s/'+f.led_mode.value+'/'+f.disp_on.value+'/'+f.disp_con.value+'/'+f.disp_inv.value+'/'+f.disp_rot.value+'/'+f.disp_l0.value+'/'+f.disp_l1.value+'/'+f.disp_l2.value+'/'+f.disp_l3.value+(p?('/p/'+p):'')+'?enc_rev='+r;"
         "});"
         "</script>"
         "<form method=\"POST\" action=\"/settings\">"

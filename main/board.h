@@ -18,6 +18,9 @@ esp_err_t board_spi_bus_init(void);
 /** Free SPI2 only when nothing else is using it (generic DevKit SD failure). */
 void board_spi_bus_release_if_unused(void);
 
+/** Cut T-Embed PWR_EN and enter deep sleep. Wake by plugging USB or the power button. */
+void board_power_off(void);
+
 #ifdef __cplusplus
 }
 #endif
