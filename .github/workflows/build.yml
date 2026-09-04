@@ -2,14 +2,14 @@ name: ESP-IDF Build Check
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'board/**' ]
   pull_request:
     branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    name: Build
+    name: Build DevKit
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -23,3 +23,20 @@ jobs:
         target: esp32s3
         path: '.'
         command: idf.py build
+
+  build-t-embed:
+    runs-on: ubuntu-latest
+    name: Build T-Embed CC1101
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+
+    - name: ESP-IDF Build
+      uses: espressif/esp-idf-ci-action@v1
+      with:
+        esp_idf_version: v5.3
+        target: esp32s3
+        path: '.'
+        command: idf.py -B build-t-embed -DBOARD=t-embed-cc1101 build

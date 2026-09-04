@@ -2,15 +2,68 @@
 
 menu "Board configuration"
 
-config BOARD_ESP32S3
-    bool
-    default y
+choice BOARD_PROFILE
+    prompt "Hardware board"
+    default BOARD_GENERIC_S3
     help
-        ESP32-S3 with SD card on SPI (MISO=12, MOSI=11, SCK=13, CS=5).
+        Pick the module you are flashing. Pins, display, and flash/PSRAM
+        defaults follow this choice. Use a matching sdkconfig (see README).
+
+config BOARD_GENERIC_S3
+    bool "Generic ESP32-S3 DevKit (SSD1306 + external SD)"
+    help
+        Typical ESP32-S3-DevKitC-1: SD on SPI 12/11/13/5, optional SSD1306
+        on I2C 18/17, WS2812 on GPIO 48 (also driven on 38).
+
+config BOARD_T_EMBED_CC1101
+    bool "LilyGO T-Embed CC1101 (ST7789 + onboard TF)"
+    help
+        Onboard 170x320 ST7789, TF slot on the same SPI bus, 8x WS2812 on
+        GPIO 14. CC1101 radio is left unused (CS held high). This is not
+        the original T-Embed (non-CC1101) pinout.
+
+endchoice
+
+config BOARD_PWR_EN_GPIO
+    int
+    default 15
+    depends on BOARD_T_EMBED_CC1101
+
+config BOARD_RADIO_CS_GPIO
+    int
+    default 12
+    depends on BOARD_T_EMBED_CC1101
+    help
+        CC1101 chip select. Held high so the radio stays off the SPI bus.
+
+config SD_SPI_MISO_GPIO
+    int "SD SPI MISO GPIO"
+    default 10 if BOARD_T_EMBED_CC1101
+    default 12
+    range 0 48
+
+config SD_SPI_MOSI_GPIO
+    int "SD SPI MOSI GPIO"
+    default 9 if BOARD_T_EMBED_CC1101
+    default 11
+    range 0 48
+
+config SD_SPI_SCK_GPIO
+    int "SD SPI SCK GPIO"
+    default 11 if BOARD_T_EMBED_CC1101
+    default 13
+    range 0 48
+
+config SD_SPI_CS_GPIO
+    int "SD SPI CS GPIO"
+    default 13 if BOARD_T_EMBED_CC1101
+    default 5
+    range 0 48
 
 config DISPLAY_SSD1306
     bool "SSD1306 OLED status display (I2C)"
     default y
+    depends on BOARD_GENERIC_S3
     help
         Drive an optional SSD1306 OLED over I2C. Status lines, contrast,
         rotation, and on/off are set on the Settings page.
@@ -63,24 +116,59 @@ endchoice
 
 endif
 
+config DISPLAY_ST7789
+    bool
+    default y
+    depends on BOARD_T_EMBED_CC1101
+    help
+        Onboard ST7789 170x320 color TFT on T-Embed CC1101.
+
+config DISPLAY_ST7789_CS_GPIO
+    int
+    default 41
+    depends on DISPLAY_ST7789
+
+config DISPLAY_ST7789_DC_GPIO
+    int
+    default 16
+    depends on DISPLAY_ST7789
+
+config DISPLAY_ST7789_BL_GPIO
+    int
+    default 21
+    depends on DISPLAY_ST7789
+
 config STATUS_LED
     bool "Onboard RGB LED (WS2812)"
     default y
     help
-        Drive the DevKit RGB LED as a dim status light. Default pattern
+        Drive the onboard WS2812 as a dim status light. Default pattern
         is dim green. Change the pattern on the Settings page.
-
-        ESP32-S3-DevKitC-1 typically uses GPIO 48. Some board revisions
-        use GPIO 38. Leave this enabled so the LED is not left at full
-        white after boot or an I2C pin scan.
 
 config STATUS_LED_GPIO
     int "RGB LED GPIO"
+    default 14 if BOARD_T_EMBED_CC1101
     default 48
     range 0 48
     depends on STATUS_LED
     help
-        ESP32-S3-DevKitC-1: GPIO 48. Some boards use GPIO 38.
+        ESP32-S3-DevKitC-1: GPIO 48. LilyGO T-Embed CC1101: GPIO 14.
+
+config STATUS_LED_COUNT
+    int "WS2812 LED count"
+    default 8 if BOARD_T_EMBED_CC1101
+    default 1
+    range 1 16
+    depends on STATUS_LED
+
+config STATUS_LED_DRIVE_DEVKIT_ALT
+    bool "Also drive GPIO 38 and 48 (DevKit LED pin variants)"
+    default y
+    depends on STATUS_LED && BOARD_GENERIC_S3
+    help
+        Some ESP32-S3 DevKits wire the RGB LED to GPIO 38 instead of 48.
+        Leave this on for generic boards. Off for T-Embed CC1101: GPIO 38
+        and 48 are CC1101 band-select pins.
 
 config STATUS_LED_BRIGHTNESS
     int "LED brightness scale (1-64)"

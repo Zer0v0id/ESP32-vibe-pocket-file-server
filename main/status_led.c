@@ -18,6 +18,7 @@ static const char *TAG = "status_led";
 
 static led_strip_handle_t s_strips[2];
 static int s_nstrips;
+static int s_led_count = 1;
 static volatile uint8_t s_mode = STATUS_LED_MODE_DIM_GREEN;
 static volatile bool s_sd_ok;
 static bool s_ready;
@@ -35,7 +36,9 @@ static void led_rgb(uint8_t r, uint8_t g, uint8_t b)
 {
     uint8_t dr = dim(r), dg = dim(g), db = dim(b);
     for (int i = 0; i < s_nstrips; i++) {
-        led_strip_set_pixel(s_strips[i], 0, dr, dg, db);
+        for (int p = 0; p < s_led_count; p++) {
+            led_strip_set_pixel(s_strips[i], p, dr, dg, db);
+        }
         led_strip_refresh(s_strips[i]);
     }
 }
@@ -164,9 +167,15 @@ static void led_task(void *arg)
             led_breathe(255, 0, 0, tick);
             break;
         case STATUS_LED_MODE_RAINBOW: {
-            uint8_t r, g, b;
-            hsv_to_rgb((uint8_t)(tick * 2), &r, &g, &b);
-            led_rgb(r, g, b);
+            for (int i = 0; i < s_nstrips; i++) {
+                for (int p = 0; p < s_led_count; p++) {
+                    uint8_t r, g, b;
+                    uint8_t hue = (uint8_t)(tick * 2 + p * (s_led_count > 1 ? 256 / s_led_count : 0));
+                    hsv_to_rgb(hue, &r, &g, &b);
+                    led_strip_set_pixel(s_strips[i], p, dim(r), dim(g), dim(b));
+                }
+                led_strip_refresh(s_strips[i]);
+            }
             break;
         }
         case STATUS_LED_MODE_HEARTBEAT:
@@ -238,9 +247,14 @@ static void add_strip(int gpio)
     if (s_nstrips >= 2) {
         return;
     }
+    int count = CONFIG_STATUS_LED_COUNT;
+    if (count < 1) {
+        count = 1;
+    }
+    s_led_count = count;
     led_strip_config_t strip_config = {
         .strip_gpio_num = gpio,
-        .max_leds = 1,
+        .max_leds = count,
     };
     led_strip_rmt_config_t rmt_config = {
         .resolution_hz = 10 * 1000 * 1000,
@@ -259,13 +273,16 @@ static void add_strip(int gpio)
 void status_led_init(uint8_t mode)
 {
     add_strip(CONFIG_STATUS_LED_GPIO);
+#if CONFIG_STATUS_LED_DRIVE_DEVKIT_ALT
     /* Many S3 DevKits use 48; some revisions use 38. Drive both so the
-     * LED is dim regardless of which pin is actually wired. */
+     * LED is dim regardless of which pin is actually wired. Do not do
+     * this on T-Embed CC1101: 38/48 are CC1101 band-select pins. */
     if (CONFIG_STATUS_LED_GPIO == 48) {
         add_strip(38);
     } else if (CONFIG_STATUS_LED_GPIO == 38) {
         add_strip(48);
     }
+#endif
     if (s_nstrips == 0) {
         return;
     }

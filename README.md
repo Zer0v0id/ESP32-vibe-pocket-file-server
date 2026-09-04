@@ -2,7 +2,10 @@
 
 Vibe Pocket File Server runs on an ESP32-S3 so you can browse, download, upload, and delete files on a microSD card from a phone or laptop. The device is a Wi‑Fi Access Point (softAP)—no router or internet required.
 
-There is **one firmware**. An SSD1306 OLED is supported out of the box. If you have no screen, leave it unwired. If you have one and want it dark, turn it off in Settings.
+There are **two board builds** of the same file server:
+
+- **Generic ESP32-S3 DevKit** (default): optional SSD1306 OLED, external microSD on SPI. If you have no screen, leave it unwired. If you have one and want it dark, turn it off in Settings.
+- **LilyGO T-Embed CC1101**: onboard ST7789, onboard TF slot, 8× WS2812. See [T_EMBED.md](T_EMBED.md). This is not the original T-Embed (non-CC1101) pinout.
 
 ## Features
 
@@ -17,18 +20,20 @@ There is **one firmware**. An SSD1306 OLED is supported out of the box. If you h
 - **Settings** — [http://192.168.4.1/settings](http://192.168.4.1/settings): Wi‑Fi SSID, password, AP channel, max connections, optional join-network (STA), theme, default view, RGB LED, OLED (on/off, contrast, invert, rotate, line fields), web root, max upload size. Stored in NVS. Display, LED, and theme apply immediately. Changing Wi‑Fi name, password, channel, or join-network settings reboots. **Reboot device** restarts without saving the form.
 - **Status** — [http://192.168.4.1/status](http://192.168.4.1/status): uptime, heap, SD space, AP clients, STA IP, firmware version.
 - **Theme** — Dark or Light, applied to the file list, Settings, and Status.
-- **RGB LED** — Onboard WS2812 (GPIO 48 on most ESP32-S3 DevKits; some use GPIO 38). Default is dim green. Settings: off, solid colors (green/blue/amber/red/white/purple/cyan/pink/yellow), breathe, rainbow, heartbeat, blink, alternate, sparkle, or Status (red = no SD, green = idle, cyan = a client is connected). Brightness stays low.
-- **OLED** — Optional SSD1306 (I2C). Four configurable status lines on 128×32 (eight on 128×64). Turn the screen **Off** in Settings if you do not want it. See [DISPLAY_WIRING.md](DISPLAY_WIRING.md).
+- **RGB LED** — Onboard WS2812 (GPIO 48 on most ESP32-S3 DevKits; GPIO 14 with 8 LEDs on T-Embed CC1101). Default is dim green. Settings: off, solid colors (green/blue/amber/red/white/purple/cyan/pink/yellow), breathe, rainbow, heartbeat, blink, alternate, sparkle, or Status (red = no SD, green = idle, cyan = a client is connected). Brightness stays low.
+- **Status display** — Generic: optional SSD1306 (I2C), four lines on 128×32 (eight on 128×64). T-Embed: onboard 320×170 ST7789, eight lines. Turn the screen **Off** in Settings if you do not want it. See [DISPLAY_WIRING.md](DISPLAY_WIRING.md) and [T_EMBED.md](T_EMBED.md).
 - **Mobile view** — Larger touch targets, or switch with the Mobile view / Desktop view link.
 - **SD space in UI** — `SD: X MB free / Y MB` above the file table.
 
 ## Hardware
 
+### Generic ESP32-S3 DevKit
+
 - ESP32-S3 (any module with Wi‑Fi). 8MB PSRAM boards work well.
 - microSD card (FAT32) and a microSD SPI breakout.
 - Optional SSD1306 OLED (I2C), typically 128×32 (0.91") or 128×64 (0.96").
 
-### SD card (SPI)
+#### SD card (SPI)
 
 | SD breakout | ESP32-S3 |
 |-------------|----------|
@@ -39,9 +44,9 @@ There is **one firmware**. An SSD1306 OLED is supported out of the box. If you h
 | SCK / CLK | GPIO 13 |
 | CS | GPIO 5 |
 
-Pins are set in `main/main.c` (`PIN_NUM_*`).
+Pins are Kconfig `SD_SPI_*` (defaults above).
 
-### OLED (I2C), optional
+#### OLED (I2C), optional
 
 | SSD1306 | ESP32-S3 |
 |---------|----------|
@@ -51,6 +56,10 @@ Pins are set in `main/main.c` (`PIN_NUM_*`).
 | SCL / SCK | GPIO 17 |
 
 Change pins and 128×32 vs 128×64 in `idf.py menuconfig` → *Board configuration*. Do not use GPIO 46 (input-only), GPIO 38/48 (RGB LED), or the SD SPI pins.
+
+### LilyGO T-Embed CC1101
+
+Onboard TF slot, ST7789, and 8× WS2812. Build with `-DBOARD=t-embed-cc1101`. Wiring and flash notes: [T_EMBED.md](T_EMBED.md). Product: [lilygo.cc/products/t-embed-cc1101](https://lilygo.cc/en-us/products/t-embed-cc1101).
 
 ## Build and flash
 
@@ -63,11 +72,23 @@ Activate the environment so `idf.py` is on your PATH:
 
 From the project directory:
 
+**Generic DevKit:**
+
 ```bash
 idf.py set-target esp32s3
 idf.py build
 idf.py -p <PORT> flash monitor
 ```
+
+**LilyGO T-Embed CC1101:**
+
+```bash
+idf.py -B build-t-embed -DBOARD=t-embed-cc1101 set-target esp32s3
+idf.py -B build-t-embed -DBOARD=t-embed-cc1101 build
+idf.py -B build-t-embed -p <PORT> flash monitor
+```
+
+Use a **SanDisk ≤32GB** FAT32 card in the T-Embed slot if the card is not detected (LilyGO’s note).
 
 Replace `<PORT>` with your serial port (for example `COM3` on Windows, `/dev/ttyUSB0` on Linux, `/dev/cu.usbmodem*` on macOS).
 
@@ -105,7 +126,7 @@ If a phone says “No Internet”, that is normal. Type `192.168.4.1` in the bro
 
 Display, LED, and theme apply as soon as you save. Wi‑Fi / join-network changes reboot.
 
-**In code:** SD pins in `main/main.c`. OLED SDA/SCL, I2C address, and panel size in `idf.py menuconfig`.
+**In code:** SD pins, OLED, and T-Embed options in `idf.py menuconfig` → *Board configuration*.
 
 ## Editing the web UI on the SD card
 

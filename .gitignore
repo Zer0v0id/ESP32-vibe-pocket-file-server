@@ -1,8 +1,11 @@
 # ESP-IDF build output
 build/
 build-display/
+build-t-embed/
 sdkconfig
 sdkconfig.old
+sdkconfig.t-embed
+sdkconfig.t-embed.old
 sdkconfig.display
 sdkconfig.display.old
 managed_components/

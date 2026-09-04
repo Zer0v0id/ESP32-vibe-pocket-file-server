@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "display.c" "status_led.c"
+    SRCS "main.c" "display.c" "display_st7789.c" "status_led.c" "board.c"
     INCLUDE_DIRS "."
     REQUIRES
         driver
@@ -11,5 +11,6 @@ idf_component_register(
         nvs_flash
         esp_event
         log
+        esp_lcd
     PRIV_REQUIRES esp_app_format esp_timer led_strip esp_driver_tsens
 )

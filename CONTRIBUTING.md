@@ -20,6 +20,7 @@ Thank you for your interest in contributing to the Vibe Pocket File Server proje
 - microSD card (FAT32 formatted)
 - microSD SPI breakout module
 - Optional: SSD1306 OLED (I2C). The firmware includes the driver; turn the screen off in Settings if unused.
+- Optional: LilyGO T-Embed CC1101 (`idf.py -B build-t-embed -DBOARD=t-embed-cc1101 build`). See `T_EMBED.md`.
 
 ### Building
 

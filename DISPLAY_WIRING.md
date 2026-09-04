@@ -34,3 +34,7 @@ idf.py -p <PORT> flash monitor
 ```
 
 If no OLED is connected, the serial log reports that the display was not found and the web UI still works.
+
+## LilyGO T-Embed CC1101
+
+That board has an onboard ST7789, not an SSD1306. Build the T-Embed firmware instead; see [T_EMBED.md](T_EMBED.md).

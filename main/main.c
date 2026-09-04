@@ -33,6 +33,7 @@
 #include "driver/spi_common.h"
 #include "display.h"
 #include "status_led.h"
+#include "board.h"
 #include "esp_system.h"
 #include "esp_chip_info.h"
 #include "esp_app_desc.h"
@@ -78,7 +79,7 @@ static const char *TAG = "file_server";
 #define THEME_LIGHT 1
 #define VIEW_DESKTOP 0
 #define VIEW_MOBILE  1
-#if CONFIG_DISPLAY_SSD1306_128X64
+#if CONFIG_DISPLAY_ST7789 || CONFIG_DISPLAY_SSD1306_128X64
 #define DISPLAY_VISIBLE_LINES 8
 #else
 #define DISPLAY_VISIBLE_LINES 4
@@ -112,11 +113,11 @@ static unsigned s_sd_file_count;
 static temperature_sensor_handle_t s_tsens;
 static bool s_settings_saved;
 
-/* SD card SPI pins for ESP32-S3. Change in main.c if your wiring differs. */
-#define PIN_NUM_MISO          12
-#define PIN_NUM_MOSI          11
-#define PIN_NUM_CLK           13
-#define PIN_NUM_CS            5
+/* SD card SPI pins. Defaults: DevKit 12/11/13/5; T-Embed CC1101 10/9/11/13. */
+#define PIN_NUM_MISO          CONFIG_SD_SPI_MISO_GPIO
+#define PIN_NUM_MOSI          CONFIG_SD_SPI_MOSI_GPIO
+#define PIN_NUM_CLK           CONFIG_SD_SPI_SCK_GPIO
+#define PIN_NUM_CS            CONFIG_SD_SPI_CS_GPIO
 
 #define FILE_PATH_MAX         (256)
 #define SCRATCH_BUFSIZE       (8192)
@@ -1154,18 +1155,10 @@ static esp_err_t sdcard_mount(void)
     };
     sdmmc_card_t *card = NULL;
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = BOARD_SPI_HOST;
 
-    spi_bus_config_t bus_cfg = {
-        .mosi_io_num = PIN_NUM_MOSI,
-        .miso_io_num = PIN_NUM_MISO,
-        .sclk_io_num = PIN_NUM_CLK,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = 4000,
-    };
-    esp_err_t ret = spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
+    esp_err_t ret = board_spi_bus_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SPI bus init failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
@@ -1176,7 +1169,7 @@ static esp_err_t sdcard_mount(void)
     ret = esp_vfs_fat_sdspi_mount(SD_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SD mount failed: %s", esp_err_to_name(ret));
-        spi_bus_free(host.slot);
+        board_spi_bus_release_if_unused();
         return ret;
     }
     ESP_LOGI(TAG, "SD card mounted at %s", SD_MOUNT_POINT);
@@ -1905,7 +1898,7 @@ static bool settings_commit_display(void)
     }
     settings_apply_display_live();
     {
-        const char *msg[4] = { "Saved", "OLED updated", "", "" };
+        const char *msg[4] = { "Saved", "Display updated", "", "" };
         display_status_update(msg, 4);
     }
     return true;
@@ -2028,12 +2021,12 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         ESP_LOGI(TAG, "Settings GET save query=%s", q);
         settings_parse_display_fields(q);
         if (settings_commit_display()) {
-            saved = "<p class=\"saved\">Saved. The OLED should flash SAVED, then show your new lines.</p>";
+            saved = "<p class=\"saved\">Saved. The display should flash SAVED, then show your new lines.</p>";
         } else {
             saved = "<p class=\"saved\">Could not write settings. Try again.</p>";
         }
     } else if (s_settings_saved || (q[0] && strstr(q, "ok=1"))) {
-        saved = "<p class=\"saved\">Saved. The OLED should flash SAVED, then show your new lines.</p>";
+        saved = "<p class=\"saved\">Saved. The display should flash SAVED, then show your new lines.</p>";
         s_settings_saved = false;
     }
 
@@ -2105,7 +2098,13 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     n += snprintf(page + n, cap - (size_t)n,
         "</select>"
         "<p class=\"hint\">Status: red = no SD card, green = idle, cyan = a phone or laptop is connected. Patterns stay dim. Rainbow / sparkle cycle hues; heartbeat is a double red pulse.</p>"
-        "<h2>OLED display</h2>"
+        "<h2>"
+#if CONFIG_DISPLAY_ST7789
+        "Color display"
+#else
+        "OLED display"
+#endif
+        "</h2>"
         "<label>Screen</label><select name=\"disp_on\"><option value=\"1\"%s>On (default)</option><option value=\"0\"%s>Off</option></select>"
         "<label>Contrast</label><select name=\"disp_con\">"
         "<option value=\"0\"%s>Low</option><option value=\"1\"%s>Medium (default)</option><option value=\"2\"%s>High</option></select>"
@@ -2130,7 +2129,11 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         "<option value=\"system\">System: uptime, heap, firmware, temp</option>"
         "<option value=\"storage\">Storage: SD, free, files, clients</option>"
         "</select>"
+#if CONFIG_DISPLAY_ST7789
+        "<p class=\"hint\">Each row is about 26 characters on the 320&times;170 panel. Pick a field per line, or a quick layout (overrides the lines).</p>");
+#else
         "<p class=\"hint\">Each OLED row is about 21 characters. Pick a field per line, or a quick layout (overrides the lines).</p>");
+#endif
     for (unsigned i = 0; i < DISPLAY_VISIBLE_LINES && n > 0 && (size_t)n + 128 < cap; i++) {
         n += snprintf(page + n, cap - (size_t)n,
                       "<label>Line %u</label><select name=\"disp_l%u\">", i + 1, i);
@@ -2143,7 +2146,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     }
     n += snprintf(page + n, cap - (size_t)n,
         "<p style=\"margin-top:0.8rem\"><button class=\"save\" type=\"submit\">Save screen &amp; LED</button></p>"
-        "<p class=\"hint\">If Save does nothing, tap <strong>test save (uptime on line 1)</strong> above. The OLED should say SAVED.</p>"
+        "<p class=\"hint\">If Save does nothing, tap <strong>test save (uptime on line 1)</strong> above. The display should say SAVED.</p>"
         "</form>"
         "<script>"
         "document.getElementById('df').addEventListener('submit',function(e){"
@@ -2376,7 +2379,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     settings_apply();
     settings_apply_display_live();
     {
-        const char *msg[4] = { "Saved", "OLED updated", "", "" };
+        const char *msg[4] = { "Saved", "Display updated", "", "" };
         display_status_update(msg, 4);
     }
 
@@ -2530,6 +2533,7 @@ static esp_err_t start_http_file_server(const char *base_path)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Vibe Pocket File Server (WiFi AP)");
+    board_early_init();
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {

@@ -1,8 +1,9 @@
 /*
  * Status display.
  *
- * Default firmware (CONFIG_DISPLAY_SSD1306 unset): no-op stub.
- * OLED firmware: SSD1306 over I2C (SDA/SCL from Kconfig).
+ * Generic DevKit: SSD1306 over I2C when CONFIG_DISPLAY_SSD1306 is set.
+ * LilyGO T-Embed CC1101: ST7789 320x170 when CONFIG_DISPLAY_ST7789 is set.
+ * Otherwise a no-op stub.
  */
 
 #pragma once
@@ -51,22 +52,20 @@ enum {
 extern "C" {
 #endif
 
-/** Apply Settings values before display_status_init(). No-op without OLED firmware. */
+/** Apply Settings values before display_status_init(). */
 void display_configure(uint8_t enabled, uint8_t contrast, uint8_t invert, uint8_t rotate180);
 
 /** Apply current display_configure values without rebooting. */
 void display_apply(void);
 
 /**
- * Initialize the status display.
- * With OLED firmware: sets up I2C and the SSD1306.
- * Without: returns ESP_OK immediately.
+ * Initialize the status display (SSD1306, ST7789, or no-op).
  */
 int display_status_init(void);
 
 /**
- * Draw one preformatted string per OLED row (21 chars typical).
- * Extra rows are ignored on 128x32.
+ * Draw one preformatted string per status row.
+ * Extra rows are ignored on 128x32 OLED.
  */
 void display_status_update(const char *const *lines, unsigned count);
 
