@@ -138,6 +138,23 @@ config DISPLAY_ST7789_BL_GPIO
     default 21
     depends on DISPLAY_ST7789
 
+config BOARD_ENCODER_A_GPIO
+    int
+    default 4
+    depends on BOARD_T_EMBED_CC1101
+
+config BOARD_ENCODER_B_GPIO
+    int
+    default 5
+    depends on BOARD_T_EMBED_CC1101
+
+config BOARD_ENCODER_BTN_GPIO
+    int
+    default 0
+    depends on BOARD_T_EMBED_CC1101
+    help
+        T-Embed encoder push switch. GPIO 0 is also BOOT; click after boot.
+
 config STATUS_LED
     bool "Onboard RGB LED (WS2812)"
     default y

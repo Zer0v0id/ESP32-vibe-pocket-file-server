@@ -37,7 +37,7 @@ If the board will not enter download mode, hold the encoder button (GPIO 0) whil
 | WS2812 | 14 | 8 LEDs |
 | CC1101 CS | 12 | Held high; radio unused |
 
-Landscape 320×170 (LilyGO `display.begin(3)`). Eight status lines, same Settings fields as the OLED firmware. Screen Off in Settings turns the backlight off.
+Landscape 320×170 (LilyGO `display.begin(3)`). Status header plus six lines, same Settings fields as the web UI. **Click the encoder** for an on-device settings menu (Wi‑Fi, display, LED, theme, reboot). Turn to move, click to select, hold to go back. Screen Off in Settings turns the backlight off.
 
 Do **not** drive GPIO 38 or 48 as a DevKit LED. Those pins are CC1101 band select (`SW0`/`IO2`).
 

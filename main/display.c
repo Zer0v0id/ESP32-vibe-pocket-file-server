@@ -384,6 +384,57 @@ void display_apply(void)
     display_unlock();
 }
 
+bool display_ui_busy(void)
+{
+    return false;
+}
+
+void display_ui_set_busy(bool busy)
+{
+    (void)busy;
+}
+
+uint16_t display_rgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    (void)r;
+    (void)g;
+    (void)b;
+    return 0;
+}
+
+void display_clear(uint16_t color)
+{
+    (void)color;
+}
+
+void display_fill_rect(int x, int y, int w, int h, uint16_t color)
+{
+    (void)x;
+    (void)y;
+    (void)w;
+    (void)h;
+    (void)color;
+}
+
+void display_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
+{
+    (void)x;
+    (void)y;
+    (void)s;
+    (void)fg;
+    (void)bg;
+}
+
+int display_font_w(void)
+{
+    return 6;
+}
+
+int display_font_h(void)
+{
+    return 8;
+}
+
 #elif !CONFIG_DISPLAY_ST7789
 
 void display_configure(uint8_t enabled, uint8_t contrast, uint8_t invert, uint8_t rotate180)
@@ -408,6 +459,57 @@ void display_status_update(const char *const *lines, unsigned count)
 {
     (void)lines;
     (void)count;
+}
+
+bool display_ui_busy(void)
+{
+    return false;
+}
+
+void display_ui_set_busy(bool busy)
+{
+    (void)busy;
+}
+
+uint16_t display_rgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    (void)r;
+    (void)g;
+    (void)b;
+    return 0;
+}
+
+void display_clear(uint16_t color)
+{
+    (void)color;
+}
+
+void display_fill_rect(int x, int y, int w, int h, uint16_t color)
+{
+    (void)x;
+    (void)y;
+    (void)w;
+    (void)h;
+    (void)color;
+}
+
+void display_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
+{
+    (void)x;
+    (void)y;
+    (void)s;
+    (void)fg;
+    (void)bg;
+}
+
+int display_font_w(void)
+{
+    return 6;
+}
+
+int display_font_h(void)
+{
+    return 8;
 }
 
 #endif /* CONFIG_DISPLAY_SSD1306 */

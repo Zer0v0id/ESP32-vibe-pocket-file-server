@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - LilyGO T-Embed CC1101 board profile: ST7789 320×170, onboard TF on shared SPI, 8× WS2812, 16MB flash / OPI PSRAM (`idf.py -DBOARD=t-embed-cc1101`)
+- T-Embed on-device settings menu (encoder) and a larger 12×20 status font
 - SSD1306 OLED status display (I2C) in the default firmware; turn the screen off in Settings
 - Configurable OLED lines, contrast, invert, rotate 180°, and quick layouts
 - Onboard WS2812 RGB LED: solid colors, breathe, rainbow, heartbeat, blink, sparkle, alternate, and Status

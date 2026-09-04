@@ -69,6 +69,17 @@ int display_status_init(void);
  */
 void display_status_update(const char *const *lines, unsigned count);
 
+/** True while the on-device menu owns the panel (skip status refresh). */
+bool display_ui_busy(void);
+void display_ui_set_busy(bool busy);
+
+uint16_t display_rgb(uint8_t r, uint8_t g, uint8_t b);
+void display_clear(uint16_t color);
+void display_fill_rect(int x, int y, int w, int h, uint16_t color);
+void display_text(int x, int y, const char *s, uint16_t fg, uint16_t bg);
+int display_font_w(void);
+int display_font_h(void);
+
 #ifdef __cplusplus
 }
 #endif

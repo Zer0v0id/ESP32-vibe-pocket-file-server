@@ -8,7 +8,7 @@
 #if CONFIG_DISPLAY_ST7789
 
 #include "display.h"
-#include "display_font.h"
+#include "display_font_ui.h"
 #include "board.h"
 
 #include "driver/gpio.h"
@@ -26,7 +26,7 @@
 
 #define LCD_H_RES           320
 #define LCD_V_RES           170
-#define LCD_ROW_H           16
+#define LCD_ROW_H           DISPLAY_FONT_H
 #define LCD_GAP_X           0
 #define LCD_GAP_Y           35
 #define LCD_PCLK_HZ         (40 * 1000 * 1000)
@@ -37,6 +37,7 @@ static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_panel_handle_t s_panel;
 static uint16_t *s_line;
 static bool s_initialized;
+static volatile bool s_ui_busy;
 static uint8_t s_enabled = 1;
 static uint8_t s_contrast = DISPLAY_CONTRAST_MED;
 static uint8_t s_invert;
@@ -60,16 +61,16 @@ static void display_unlock(void)
     }
 }
 
-static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
+uint16_t display_rgb(uint8_t r, uint8_t g, uint8_t b)
 {
     return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
 static void contrast_scale(uint8_t *r, uint8_t *g, uint8_t *b)
 {
-    unsigned n = 80;
+    unsigned n = 88;
     if (s_contrast == DISPLAY_CONTRAST_LOW) {
-        n = 40;
+        n = 55;
     } else if (s_contrast == DISPLAY_CONTRAST_HIGH) {
         n = 100;
     }
@@ -85,7 +86,6 @@ static void backlight_set(bool on)
 
 static void apply_rotation(void)
 {
-    /* LilyGO landscape begin(3): MADCTL 0xA0. Rotate 180 uses 0x60. */
     esp_lcd_panel_swap_xy(s_panel, true);
     if (s_rotate) {
         esp_lcd_panel_mirror(s_panel, true, false);
@@ -95,57 +95,105 @@ static void apply_rotation(void)
     esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y);
 }
 
-static void fill_screen(uint16_t color)
+static void fill_span(int x, int y, int w, int h, uint16_t color)
 {
-    if (!s_panel || !s_line) {
+    if (!s_panel || !s_line || w <= 0 || h <= 0) {
         return;
     }
-    for (int i = 0; i < LCD_H_RES * LCD_ROW_H; i++) {
-        s_line[i] = color;
+    if (x < 0) {
+        w += x;
+        x = 0;
     }
-    for (int y = 0; y < LCD_V_RES; y += LCD_ROW_H) {
-        int h = LCD_ROW_H;
-        if (y + h > LCD_V_RES) {
-            h = LCD_V_RES - y;
+    if (y < 0) {
+        h += y;
+        y = 0;
+    }
+    if (x + w > LCD_H_RES) {
+        w = LCD_H_RES - x;
+    }
+    if (y + h > LCD_V_RES) {
+        h = LCD_V_RES - y;
+    }
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    int max_rows = LCD_ROW_H;
+    for (int row = 0; row < h; row += max_rows) {
+        int bh = h - row;
+        if (bh > max_rows) {
+            bh = max_rows;
         }
-        esp_lcd_panel_draw_bitmap(s_panel, 0, y, LCD_H_RES, y + h, s_line);
+        int n = w * bh;
+        for (int i = 0; i < n; i++) {
+            s_line[i] = color;
+        }
+        esp_lcd_panel_draw_bitmap(s_panel, x, y + row, x + w, y + row + bh, s_line);
     }
 }
 
-static void draw_text_row(int y, const char *str, uint16_t fg, uint16_t bg)
+bool display_ui_busy(void)
 {
-    int n = LCD_H_RES * LCD_ROW_H;
-    for (int i = 0; i < n; i++) {
-        s_line[i] = bg;
-    }
-    if (!str) {
-        esp_lcd_panel_draw_bitmap(s_panel, 0, y, LCD_H_RES, y + LCD_ROW_H, s_line);
+    return s_ui_busy;
+}
+
+void display_ui_set_busy(bool busy)
+{
+    s_ui_busy = busy;
+}
+
+int display_font_w(void)
+{
+    return DISPLAY_FONT_W;
+}
+
+int display_font_h(void)
+{
+    return DISPLAY_FONT_H;
+}
+
+void display_clear(uint16_t color)
+{
+    display_lock();
+    fill_span(0, 0, LCD_H_RES, LCD_V_RES, color);
+    display_unlock();
+}
+
+void display_fill_rect(int x, int y, int w, int h, uint16_t color)
+{
+    display_lock();
+    fill_span(x, y, w, h, color);
+    display_unlock();
+}
+
+void display_text(int x, int y, const char *s, uint16_t fg, uint16_t bg)
+{
+    if (!s_panel || !s_line || !s || y < 0 || y + DISPLAY_FONT_H > LCD_V_RES) {
         return;
     }
-    int x = 4;
-    while (*str && x + 12 <= LCD_H_RES) {
-        unsigned c = (unsigned char)*str++;
-        if (c < 32 || c > 126) {
+    display_lock();
+    while (*s && x < LCD_H_RES) {
+        unsigned c = (unsigned char)*s++;
+        if (c < DISPLAY_FONT_FIRST || c >= DISPLAY_FONT_FIRST + DISPLAY_FONT_COUNT) {
             c = '?';
         }
-        const uint8_t *glyph = display_font5x7[c - 32];
-        for (int col = 0; col < 5; col++) {
-            uint8_t bits = glyph[col];
-            for (int row = 0; row < 7; row++) {
-                if (bits & (1u << row)) {
-                    int px = x + col * 2;
-                    int py = row * 2 + 1;
-                    for (int dy = 0; dy < 2; dy++) {
-                        for (int dx = 0; dx < 2; dx++) {
-                            s_line[(py + dy) * LCD_H_RES + (px + dx)] = fg;
-                        }
-                    }
-                }
+        const uint8_t *glyph = display_font_bits[c - DISPLAY_FONT_FIRST];
+        int w = DISPLAY_FONT_W;
+        if (x + w > LCD_H_RES) {
+            w = LCD_H_RES - x;
+        }
+        if (w <= 0) {
+            break;
+        }
+        for (int row = 0; row < DISPLAY_FONT_H; row++) {
+            uint16_t bits = (uint16_t)glyph[row * 2] | ((uint16_t)glyph[row * 2 + 1] << 8);
+            for (int col = 0; col < w; col++) {
+                s_line[row * w + col] = (bits & (1u << col)) ? fg : bg;
             }
         }
-        x += 12;
+        esp_lcd_panel_draw_bitmap(s_panel, x, y, x + w, y + DISPLAY_FONT_H, s_line);
+        x += DISPLAY_FONT_W;
     }
-    esp_lcd_panel_draw_bitmap(s_panel, 0, y, LCD_H_RES, y + LCD_ROW_H, s_line);
+    display_unlock();
 }
 
 void display_configure(uint8_t enabled, uint8_t contrast, uint8_t invert, uint8_t rotate180)
@@ -162,11 +210,10 @@ static void apply_panel_settings(void)
         return;
     }
     apply_rotation();
-    /* LilyGO TFT_INVERSION_ON; Settings invert flips that. */
     esp_lcd_panel_invert_color(s_panel, s_invert ? false : true);
     backlight_set(s_enabled != 0);
     if (!s_enabled) {
-        fill_screen(0x0000);
+        fill_span(0, 0, LCD_H_RES, LCD_V_RES, 0x0000);
     }
 }
 
@@ -239,50 +286,66 @@ int display_status_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
     if (s_enabled) {
-        fill_screen(rgb565(0x1a, 0x1a, 0x2e));
+        fill_span(0, 0, LCD_H_RES, LCD_V_RES, display_rgb(0x12, 0x12, 0x22));
         s_initialized = true;
     }
 
-    ESP_LOGI(TAG, "ST7789 ready (%dx%d landscape, CS=%d DC=%d BL=%d)",
+    ESP_LOGI(TAG, "ST7789 ready (%dx%d landscape, CS=%d DC=%d BL=%d, font %dx%d)",
              LCD_H_RES, LCD_V_RES,
              CONFIG_DISPLAY_ST7789_CS_GPIO, CONFIG_DISPLAY_ST7789_DC_GPIO,
-             CONFIG_DISPLAY_ST7789_BL_GPIO);
+             CONFIG_DISPLAY_ST7789_BL_GPIO, DISPLAY_FONT_W, DISPLAY_FONT_H);
     return ESP_OK;
 }
 
 void display_status_update(const char *const *lines, unsigned count)
 {
+    if (s_ui_busy || !s_enabled) {
+        return;
+    }
     display_lock();
-    if (!s_panel || !s_line || !s_enabled) {
+    if (!s_panel || !s_line) {
         display_unlock();
         return;
     }
     s_initialized = true;
 
-    uint8_t fr = 0xee, fg = 0xee, fb = 0xf0;
-    uint8_t br = 0x1a, bgc = 0x1a, bb = 0x2e;
+    uint8_t fr = 0xf2, fg = 0xf2, fb = 0xf4;
+    uint8_t hr = 0xff, hg = 0x7a, hb = 0x8a;
+    uint8_t br = 0x12, bgc = 0x12, bb = 0x22;
+    uint8_t hbr = 0x16, hbg = 0x21, hbb = 0x3e;
     contrast_scale(&fr, &fg, &fb);
-    uint16_t fg_c = rgb565(fr, fg, fb);
-    uint16_t bg_c = rgb565(br, bgc, bb);
+    contrast_scale(&hr, &hg, &hb);
+    uint16_t fg_c = display_rgb(fr, fg, fb);
+    uint16_t accent = display_rgb(hr, hg, hb);
+    uint16_t bg_c = display_rgb(br, bgc, bb);
+    uint16_t head_bg = display_rgb(hbr, hbg, hbb);
+    uint16_t mute = display_rgb(0x9a, 0x9a, 0xaa);
     if (s_invert) {
         uint16_t tmp = fg_c;
         fg_c = bg_c;
         bg_c = tmp;
     }
 
+    fill_span(0, 0, LCD_H_RES, LCD_V_RES, bg_c);
+    fill_span(0, 0, LCD_H_RES, DISPLAY_FONT_H + 4, head_bg);
+    display_unlock();
+
+    display_text(8, 2, "Vibe Pocket", accent, head_bg);
+
     unsigned n = count;
-    if (n > 8) {
-        n = 8;
+    if (n > 6) {
+        n = 6;
     }
-    fill_screen(bg_c);
+    int y = DISPLAY_FONT_H + 8;
     for (unsigned i = 0; i < n; i++) {
-        int y = 5 + (int)i * 20;
-        if (y + LCD_ROW_H > LCD_V_RES) {
+        const char *row = (lines && lines[i]) ? lines[i] : "";
+        display_text(8, y, row, fg_c, bg_c);
+        y += DISPLAY_FONT_H;
+        if (y + DISPLAY_FONT_H > LCD_V_RES - 18) {
             break;
         }
-        draw_text_row(y, (lines && lines[i]) ? lines[i] : "", fg_c, bg_c);
     }
-    display_unlock();
+    display_text(8, LCD_V_RES - DISPLAY_FONT_H - 2, "Click knob: Settings", mute, bg_c);
 }
 
 #endif /* CONFIG_DISPLAY_ST7789 */

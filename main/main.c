@@ -34,6 +34,8 @@
 #include "display.h"
 #include "status_led.h"
 #include "board.h"
+#include "app_settings.h"
+#include "ui_menu.h"
 #include "esp_system.h"
 #include "esp_chip_info.h"
 #include "esp_app_desc.h"
@@ -75,35 +77,18 @@ static const char *TAG = "file_server";
 #define NVS_KEY_DISP_LINES      "disp_ln"
 #define NVS_KEY_DISP_LAY        "disp_lay"
 
-#define THEME_DARK  0
-#define THEME_LIGHT 1
 #define VIEW_DESKTOP 0
 #define VIEW_MOBILE  1
-#if CONFIG_DISPLAY_ST7789 || CONFIG_DISPLAY_SSD1306_128X64
+#if CONFIG_DISPLAY_ST7789
+#define DISPLAY_VISIBLE_LINES 6
+#define DISPLAY_LINE_CHARS    26
+#elif CONFIG_DISPLAY_SSD1306_128X64
 #define DISPLAY_VISIBLE_LINES 8
+#define DISPLAY_LINE_CHARS    22
 #else
 #define DISPLAY_VISIBLE_LINES 4
+#define DISPLAY_LINE_CHARS    22
 #endif
-
-/* Runtime config (loaded from NVS at boot; editable via /settings) */
-typedef struct {
-    char wifi_ssid[33];
-    char wifi_pass[65];
-    uint8_t wifi_channel;
-    uint8_t wifi_max_conn;
-    char web_root_dir[32];
-    uint32_t max_file_size;  /* bytes */
-    char sta_ssid[33];       /* optional: join this network (AP+STA mode) */
-    char sta_pass[65];
-    uint8_t theme;           /* THEME_DARK / THEME_LIGHT */
-    uint8_t mobile_default;  /* VIEW_DESKTOP / VIEW_MOBILE */
-    uint8_t led_mode;        /* STATUS_LED_MODE_* */
-    uint8_t disp_on;         /* 0=off, 1=on */
-    uint8_t disp_contrast;   /* DISPLAY_CONTRAST_* */
-    uint8_t disp_invert;     /* 0=normal, 1=inverted */
-    uint8_t disp_rotate;     /* 0=normal, 1=180 degrees */
-    uint8_t disp_line[DISPLAY_LINE_MAX];
-} app_config_t;
 
 static app_config_t s_config;
 static char s_sd_web_root[64];  /* SD_MOUNT_POINT "/" web_root_dir */
@@ -811,9 +796,11 @@ static void format_disp_field(uint8_t field, char *out, size_t n)
     }
 }
 
+static void settings_apply_display_live(void);
+
 static void push_display_status(void)
 {
-    char rows[DISPLAY_LINE_MAX][22];
+    char rows[DISPLAY_LINE_MAX][DISPLAY_LINE_CHARS];
     const char *ptrs[DISPLAY_LINE_MAX];
     unsigned n = DISPLAY_VISIBLE_LINES;
     if (n > DISPLAY_LINE_MAX) {
@@ -826,12 +813,42 @@ static void push_display_status(void)
     display_status_update(ptrs, n);
 }
 
+void app_display_refresh(void)
+{
+    push_display_status();
+}
+
+app_config_t *app_config_get(void)
+{
+    return &s_config;
+}
+
+esp_err_t app_settings_save(void)
+{
+    return settings_save();
+}
+
+void app_settings_apply_live(void)
+{
+    settings_apply_display_live();
+}
+
+const char *app_led_mode_label(uint8_t mode)
+{
+    if (mode > STATUS_LED_MODE_MAX) {
+        return "?";
+    }
+    return k_led_mode_labels[mode];
+}
+
 static void display_refresh_task(void *arg)
 {
     (void)arg;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(3000));
-        push_display_status();
+        if (!display_ui_busy()) {
+            push_display_status();
+        }
     }
 }
 
@@ -2584,6 +2601,7 @@ void app_main(void)
     display_status_init();
     push_display_status();
     xTaskCreate(display_refresh_task, "oled", 8192, NULL, 3, NULL);
+    ui_menu_init();
 
     ESP_LOGI(TAG, "Ready. Connect to WiFi \"%s\", then open http://192.168.4.1", s_config.wifi_ssid);
 }

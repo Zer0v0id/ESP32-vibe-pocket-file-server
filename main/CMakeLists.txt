@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "display.c" "display_st7789.c" "status_led.c" "board.c"
+    SRCS "main.c" "display.c" "display_st7789.c" "status_led.c" "board.c" "ui_menu.c"
     INCLUDE_DIRS "."
     REQUIRES
         driver
