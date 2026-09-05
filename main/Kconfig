@@ -20,7 +20,8 @@ config BOARD_T_EMBED_CC1101
     help
         Onboard 170x320 ST7789, TF slot on the same SPI bus, 8x WS2812 on
         GPIO 14. CC1101 radio is left unused (CS held high). This is not
-        the original T-Embed (non-CC1101) pinout.
+        the original T-Embed (non-CC1101) pinout: that board often uses
+        SD CS 39. Do not flash this profile with DevKit SD pins 12/11/13/5.
 
 endchoice
 

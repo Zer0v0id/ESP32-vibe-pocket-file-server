@@ -197,7 +197,27 @@ void display_ui_set_busy(bool busy)
 {
     display_lock();
     s_ui_busy = busy;
+    if (busy) {
+        line_wait();
+        if (s_xfer_done) {
+            xSemaphoreGive(s_xfer_done);
+        }
+    }
     s_status_cache_n = -1;
+    display_unlock();
+}
+
+void display_spi_claim(void)
+{
+    display_lock();
+    line_wait();
+}
+
+void display_spi_release(void)
+{
+    if (s_xfer_done) {
+        xSemaphoreGive(s_xfer_done);
+    }
     display_unlock();
 }
 

@@ -73,6 +73,10 @@ void display_status_update(const char *const *lines, unsigned count);
 bool display_ui_busy(void);
 void display_ui_set_busy(bool busy);
 
+/** Pause ST7789 DMA so the TF slot can use the shared SPI bus. No-op elsewhere. */
+void display_spi_claim(void);
+void display_spi_release(void);
+
 uint16_t display_rgb(uint8_t r, uint8_t g, uint8_t b);
 void display_clear(uint16_t color);
 void display_fill_rect(int x, int y, int w, int h, uint16_t color);

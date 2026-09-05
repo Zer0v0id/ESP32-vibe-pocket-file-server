@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - LilyGO T-Embed CC1101 board profile: ST7789 320×170, onboard TF on shared SPI, 8× WS2812, 16MB flash / OPI PSRAM (`idf.py -DBOARD=t-embed-cc1101`)
 - T-Embed on-device settings menu (encoder) and a larger 12×20 status font
 - T-Embed reverse knob scroll and Power → Shut down
+- Format and initialize the SD card (on-device Storage menu and Settings → Format SD)
+
+### Fixed
+- T-Embed TF mount on the shared SPI bus (idle LCD/CC1101/nRF CS, skip MISO-high wait, slower clock than the DevKit)
 
 ### Fixed
 - T-Embed ST7789 color byte order and SPI tearing that made on-screen text look purple and fringed

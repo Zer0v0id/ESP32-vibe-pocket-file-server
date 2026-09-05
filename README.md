@@ -142,7 +142,7 @@ If the file is missing or invalid, the firmware falls back to the built-in page.
 
 - The site opens in `/sdcard/files` by default; that directory is created if missing.
 - Browse and upload stay under this folder so you are not dropped at the SD root.
-- Format the SD card as FAT32 before first use.
+- Format the SD card as FAT32 before first use, or use **Settings → Format & initialize SD** (on the device: **Storage → Format SD**, click twice). That erases the card, creates `files/` and `www/`, and reboots.
 - If the card fails to mount, HTTP still starts; upload and delete error until you insert a card and reset.
 - Large files use chunked transfer. Names with spaces or special characters are URL-encoded and sanitized for FAT.
 - Directory listings are sorted alphabetically, directories first.

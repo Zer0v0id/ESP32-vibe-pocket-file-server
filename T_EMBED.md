@@ -37,13 +37,27 @@ If the board will not enter download mode, hold the encoder button (GPIO 0) whil
 | WS2812 | 14 | 8 LEDs |
 | CC1101 CS | 12 | Held high; radio unused |
 
-Landscape 320×170 (LilyGO `display.begin(3)`). Status header plus six lines, same Settings fields as the web UI. **Click the encoder** for Settings. Turn to move, click to open or adjust (turn then click to keep), **Home** / **Back** or hold to go up a level. **Display → Scroll** reverses the knob. **Power** can reboot or shut down (PWR_EN off, then deep sleep; plug USB or use the power button to wake). Screen Off in Settings turns the backlight off.
+Landscape 320×170 (LilyGO `display.begin(3)`). Status header plus six lines, same Settings fields as the web UI. **Click the encoder** for Settings. Turn to move, click to open or adjust (turn then click to keep), **Home** / **Back** or hold to go up a level. **Display → Scroll** reverses the knob. **Power** can reboot or shut down (PWR_EN off, then deep sleep; plug USB or use the power button to wake). **Storage → Format SD** (click twice) FAT32-formats the card and creates `files/` and `www/`, then reboots. Screen Off in Settings turns the backlight off.
 
 Do **not** drive GPIO 38 or 48 as a DevKit LED. Those pins are CC1101 band select (`SW0`/`IO2`).
 
 ## SD card
 
-LilyGO reports better results with **SanDisk cards 32GB or smaller**, FAT32. If the slot is empty or the card is not detected, the web UI still starts with the “No SD card” page.
+This TF slot is **not** the DevKit wiring (MISO 12 / MOSI 11 / SCK 13 / CS 5). LCD, TF, CC1101, and the expansion nRF24 header share SPI2:
+
+| Function | GPIO |
+|----------|------|
+| SCK / MOSI / MISO | 11 / 9 / 10 |
+| SD CS | 13 |
+| LCD CS | 41 |
+| CC1101 CS | 12 (held high) |
+| nRF24 CS / CE | 44 / 43 (idle; header only) |
+
+PWR_EN (GPIO 15) must be high before the slot is powered. Firmware waits, idles every CS, skips the ESP-IDF “wait for MISO high” check (that hangs on this shared bus), and clocks the card at 10 MHz then 4 MHz.
+
+If Storage shows **No FAT**, the slot answered but the card has no FAT32 volume (blank, Mac/Windows exFAT, or a leftover partition). **Storage → Format SD** (click twice) writes FAT32 and creates `files/` and `www/`, then reboots. That erases the card.
+
+LilyGO also reports better results with **SanDisk cards 32GB or smaller**. If the slot is empty, the web UI still starts with the “No SD card” page.
 
 ## What it does not do
 

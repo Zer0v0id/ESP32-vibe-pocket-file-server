@@ -30,6 +30,7 @@ static const char *TAG = "ui_menu";
 #define UI_LED    4
 #define UI_EDIT   5
 #define UI_POWER  6
+#define UI_STORAGE 7
 
 #define EDIT_SSID 0
 #define EDIT_PASS 1
@@ -37,6 +38,7 @@ static const char *TAG = "ui_menu";
 static int s_screen = UI_STATUS;
 static int s_sel;
 static int s_adjust;
+static int s_fmt_confirm;
 static int s_edit_kind;
 static char s_edit[65];
 static int s_edit_pos;
@@ -56,9 +58,10 @@ _Static_assert(sizeof(k_led_short) / sizeof(k_led_short[0]) == STATUS_LED_MODE_M
                "LED short labels must match STATUS_LED_MODE_MAX");
 
 static const char *k_root[] = {
-    "Wi-Fi", "Display", "LED pattern", "Theme", "Power", "Home",
+    "Wi-Fi", "Display", "LED pattern", "Theme", "Storage", "Power", "Home",
 };
-#define ROOT_N 6
+#define ROOT_N 7
+#define ROOT_VIS 5
 
 static const char *k_wifi[] = {
     "SSID", "Password", "Channel", "Max clients", "Save Wi-Fi (reboot)", "Back",
@@ -74,6 +77,11 @@ static const char *k_power[] = {
     "Reboot", "Shut down", "Back",
 };
 #define POWER_N 3
+
+static const char *k_storage[] = {
+    "SD card", "Format SD", "Back",
+};
+#define STORAGE_N 3
 #define LED_BACK (STATUS_LED_MODE_MAX + 1)
 #define LED_N    (STATUS_LED_MODE_MAX + 2)
 
@@ -88,6 +96,21 @@ static uint16_t col_hi(void) { return display_rgb(0x0f, 0x34, 0x60); }
 static uint16_t col_ac(void) { return display_rgb(0xff, 0x7a, 0x8a); }
 static uint16_t col_hd(void) { return display_rgb(0x16, 0x21, 0x3e); }
 static uint16_t col_mu(void) { return display_rgb(0x9a, 0x9a, 0xaa); }
+
+static int window_first(int sel, int count, int vis)
+{
+    int first = sel - vis / 2;
+    if (first < 0) {
+        first = 0;
+    }
+    if (count > vis && first > count - vis) {
+        first = count - vis;
+    }
+    if (first < 0) {
+        first = 0;
+    }
+    return first;
+}
 
 static void draw_header(const char *title)
 {
@@ -177,12 +200,17 @@ static void paint(void)
     display_clear(col_bg());
     if (s_screen == UI_ROOT) {
         draw_header("Settings");
-        for (int i = 0; i < ROOT_N; i++) {
+        int first = window_first(s_sel, ROOT_N, ROOT_VIS);
+        for (int row = 0; row < ROOT_VIS; row++) {
+            int i = first + row;
+            if (i >= ROOT_N) {
+                break;
+            }
             if (i == 3) {
                 snprintf(val, sizeof(val), "%s", app_config_get()->theme ? "Light" : "Dark");
-                draw_row(i, i == s_sel, k_root[i], val);
+                draw_row(row, i == s_sel, k_root[i], val);
             } else {
-                draw_row(i, i == s_sel, k_root[i], (i == 5) ? "" : ">");
+                draw_row(row, i == s_sel, k_root[i], (i == 6) ? "" : ">");
             }
         }
         draw_footer(s_adjust ? "Turn to change  Click to keep" : "Click to open  Hold = Home");
@@ -206,6 +234,14 @@ static void paint(void)
             draw_row(i, i == s_sel, k_power[i], "");
         }
         draw_footer("Click to select  Hold = Back");
+    } else if (s_screen == UI_STORAGE) {
+        draw_header("Storage");
+        draw_row(0, s_sel == 0, k_storage[0],
+                 app_sd_mounted() ? "OK" : (app_sd_needs_format() ? "No FAT" : "Missing"));
+        draw_row(1, s_sel == 1, s_fmt_confirm ? "ERASE now?" : k_storage[1],
+                 s_fmt_confirm ? "!!!" : "");
+        draw_row(2, s_sel == 2, k_storage[2], "");
+        draw_footer(s_fmt_confirm ? "Click to erase ALL files" : "Format: FAT32 + files/");
     } else if (s_screen == UI_LED) {
         draw_header("LED pattern");
         app_config_t *c = app_config_get();
@@ -264,6 +300,7 @@ static void enter_menu(void)
     s_screen = UI_ROOT;
     s_sel = 0;
     s_adjust = 0;
+    s_fmt_confirm = 0;
     s_idle_at = xTaskGetTickCount();
     paint();
 }
@@ -271,6 +308,7 @@ static void enter_menu(void)
 static void leave_menu(void)
 {
     s_adjust = 0;
+    s_fmt_confirm = 0;
     s_screen = UI_STATUS;
     display_ui_set_busy(false);
     app_display_refresh();
@@ -351,6 +389,7 @@ static void finish_edit(void)
 static void go_back(void)
 {
     s_adjust = 0;
+    s_fmt_confirm = 0;
     if (s_screen == UI_STATUS) {
         return;
     }
@@ -367,9 +406,12 @@ static void go_back(void)
     } else if (s_screen == UI_LED) {
         s_screen = UI_ROOT;
         s_sel = 2;
-    } else if (s_screen == UI_POWER) {
+    } else if (s_screen == UI_STORAGE) {
         s_screen = UI_ROOT;
         s_sel = 4;
+    } else if (s_screen == UI_POWER) {
+        s_screen = UI_ROOT;
+        s_sel = 5;
     } else if (s_screen == UI_EDIT) {
         s_screen = UI_WIFI;
         s_sel = s_edit_kind;
@@ -430,6 +472,7 @@ static void on_turn(int dir)
     if (s_screen == UI_STATUS) {
         return;
     }
+    s_fmt_confirm = 0;
     if (app_config_get()->enc_rev) {
         dir = -dir;
     }
@@ -454,6 +497,8 @@ static void on_turn(int dir)
         max = LED_N;
     } else if (s_screen == UI_POWER) {
         max = POWER_N;
+    } else if (s_screen == UI_STORAGE) {
+        max = STORAGE_N;
     }
     s_sel += dir;
     if (s_sel < 0) {
@@ -514,6 +559,11 @@ static void on_click(void)
             s_adjust = 1;
             break;
         case 4:
+            s_screen = UI_STORAGE;
+            s_sel = 0;
+            s_fmt_confirm = 0;
+            break;
+        case 5:
             s_screen = UI_POWER;
             s_sel = 0;
             break;
@@ -576,6 +626,41 @@ static void on_click(void)
         }
         return;
     }
+    if (s_screen == UI_STORAGE) {
+        if (s_sel == 1) {
+            if (!s_fmt_confirm) {
+                s_fmt_confirm = 1;
+                paint();
+                return;
+            }
+            display_clear(col_bg());
+            draw_header("Formatting SD");
+            draw_footer("Keep power on...");
+            esp_err_t err = app_sd_format_init();
+            if (err != ESP_OK) {
+                s_fmt_confirm = 0;
+                display_clear(col_bg());
+                draw_header("Format failed");
+                draw_footer("Hold = Back");
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                paint();
+                return;
+            }
+            display_clear(col_bg());
+            draw_header("SD ready");
+            draw_footer("Rebooting...");
+            vTaskDelay(pdMS_TO_TICKS(800));
+            esp_restart();
+            return;
+        }
+        s_fmt_confirm = 0;
+        if (s_sel == 2) {
+            go_back();
+        } else {
+            paint();
+        }
+        return;
+    }
     if (s_screen == UI_LED) {
         if (s_sel == LED_BACK) {
             go_back();
@@ -601,6 +686,11 @@ static void on_hold(void)
     }
     if (s_adjust) {
         s_adjust = 0;
+        paint();
+        return;
+    }
+    if (s_fmt_confirm) {
+        s_fmt_confirm = 0;
         paint();
         return;
     }
@@ -672,7 +762,7 @@ void ui_menu_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&io);
-    xTaskCreate(ui_task, "ui_menu", 4096, NULL, 4, NULL);
+    xTaskCreate(ui_task, "ui_menu", 8192, NULL, 4, NULL);
     ESP_LOGI(TAG, "Encoder A=%d B=%d BTN=%d (click for settings)", ENC_A, ENC_B, ENC_BTN);
 }
 

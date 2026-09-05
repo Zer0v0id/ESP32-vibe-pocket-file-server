@@ -32,3 +32,7 @@ app_config_t *app_config_get(void);
 esp_err_t app_settings_save(void);
 void app_settings_apply_live(void);
 const char *app_led_mode_label(uint8_t mode);
+bool app_sd_mounted(void);
+bool app_sd_needs_format(void);
+/** FAT32 format the SD card and create the web-root folders. Erases all files. */
+esp_err_t app_sd_format_init(void);

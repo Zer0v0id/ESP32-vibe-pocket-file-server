@@ -394,6 +394,14 @@ void display_ui_set_busy(bool busy)
     (void)busy;
 }
 
+void display_spi_claim(void)
+{
+}
+
+void display_spi_release(void)
+{
+}
+
 uint16_t display_rgb(uint8_t r, uint8_t g, uint8_t b)
 {
     (void)r;
@@ -469,6 +477,14 @@ bool display_ui_busy(void)
 void display_ui_set_busy(bool busy)
 {
     (void)busy;
+}
+
+void display_spi_claim(void)
+{
+}
+
+void display_spi_release(void)
+{
 }
 
 uint16_t display_rgb(uint8_t r, uint8_t g, uint8_t b)

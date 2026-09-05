@@ -28,6 +28,7 @@
 #include "esp_http_server.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include "driver/sdspi_host.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "driver/spi_common.h"
@@ -95,6 +96,8 @@ static app_config_t s_config;
 static char s_sd_web_root[64];  /* SD_MOUNT_POINT "/" web_root_dir */
 uint32_t g_max_file_size;      /* for upload handler */
 static bool s_sd_mounted;
+static bool s_sd_no_fat;
+static sdmmc_card_t *s_sd_card;
 static unsigned s_sd_file_count;
 static temperature_sensor_handle_t s_tsens;
 static bool s_settings_saved;
@@ -846,6 +849,16 @@ const char *app_led_mode_label(uint8_t mode)
     return k_led_mode_labels[mode];
 }
 
+bool app_sd_mounted(void)
+{
+    return s_sd_mounted;
+}
+
+bool app_sd_needs_format(void)
+{
+    return s_sd_no_fat;
+}
+
 static void display_refresh_task(void *arg)
 {
     (void)arg;
@@ -1168,16 +1181,41 @@ static void dns_server_task(void *pvParameters)
 }
 
 /* ========== SD card mount ========== */
-static esp_err_t sdcard_mount(void)
+static void sdcard_init_dirs(void)
 {
+    if (mkdir(s_sd_web_root, 0755) != 0 && errno != EEXIST) {
+        ESP_LOGW(TAG, "Could not create web root %s (errno %d)", s_sd_web_root, errno);
+    }
+    if (mkdir(SD_MOUNT_POINT "/www", 0755) != 0 && errno != EEXIST) {
+        ESP_LOGW(TAG, "Could not create %s/www (errno %d)", SD_MOUNT_POINT, errno);
+    }
+}
+
+static esp_err_t sdcard_mount_once(const sdmmc_host_t *host, const sdspi_device_config_t *slot,
+                                  const esp_vfs_fat_sdmmc_mount_config_t *mount_config)
+{
+    board_spi_prepare_sd();
+    return esp_vfs_fat_sdspi_mount(SD_MOUNT_POINT, host, slot, mount_config, &s_sd_card);
+}
+
+static esp_err_t sdcard_mount_ex(bool format_if_failed)
+{
+    if (s_sd_card) {
+        return ESP_OK;
+    }
+
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-        .format_if_mount_failed = false,
+        .format_if_mount_failed = format_if_failed,
         .max_files = 5,
         .allocation_unit_size = 16 * 1024,
     };
-    sdmmc_card_t *card = NULL;
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = BOARD_SPI_HOST;
+#if CONFIG_BOARD_T_EMBED_CC1101
+    /* Shared SPI with LCD + CC1101. DevKit uses 20 MHz on a dedicated bus. */
+    host.max_freq_khz = 10000;
+    host.command_timeout_ms = 1000;
+#endif
 
     esp_err_t ret = board_spi_bus_init();
     if (ret != ESP_OK) {
@@ -1187,15 +1225,85 @@ static esp_err_t sdcard_mount(void)
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_config.gpio_cs = PIN_NUM_CS;
     slot_config.host_id = host.slot;
+#if CONFIG_BOARD_T_EMBED_CC1101
+    /* Default wait_for_miso (40 ms) hangs when another SPI slave holds MISO. */
+    slot_config.wait_for_miso = -1;
+#endif
 
-    ret = esp_vfs_fat_sdspi_mount(SD_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
+    ESP_LOGI(TAG, "SD SPI MISO=%d MOSI=%d SCK=%d CS=%d (max %d kHz)%s",
+             PIN_NUM_MISO, PIN_NUM_MOSI, PIN_NUM_CLK, PIN_NUM_CS,
+             host.max_freq_khz,
+             format_if_failed ? " format-if-failed" : "");
+
+    ret = sdcard_mount_once(&host, &slot_config, &mount_config);
+#if CONFIG_BOARD_T_EMBED_CC1101
+    /* ESP_FAIL here is almost always FatFs FR_NO_FILESYSTEM (card talks, no FAT).
+     * Clock retries only help when the slot did not answer. */
+    if (ret != ESP_OK && ret != ESP_FAIL) {
+        ESP_LOGW(TAG, "SD mount %s, retry 4 MHz after 200 ms", esp_err_to_name(ret));
+        s_sd_card = NULL;
+        vTaskDelay(pdMS_TO_TICKS(200));
+        host.max_freq_khz = 4000;
+        ret = sdcard_mount_once(&host, &slot_config, &mount_config);
+    }
+    if (ret != ESP_OK && ret != ESP_FAIL) {
+        ESP_LOGW(TAG, "SD mount %s, retry probe speed after 200 ms", esp_err_to_name(ret));
+        s_sd_card = NULL;
+        vTaskDelay(pdMS_TO_TICKS(200));
+        host.max_freq_khz = SDMMC_FREQ_PROBING;
+        ret = sdcard_mount_once(&host, &slot_config, &mount_config);
+    }
+#endif
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SD mount failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "SD mount failed: %s (MISO=%d MOSI=%d SCK=%d CS=%d)",
+                 esp_err_to_name(ret), PIN_NUM_MISO, PIN_NUM_MOSI, PIN_NUM_CLK, PIN_NUM_CS);
+        if (ret == ESP_FAIL && !format_if_failed) {
+            s_sd_no_fat = true;
+            ESP_LOGW(TAG, "SD slot answered but has no FAT32 volume (blank or exFAT). Use Storage → Format SD.");
+        }
+        s_sd_card = NULL;
         board_spi_bus_release_if_unused();
         return ret;
     }
-    ESP_LOGI(TAG, "SD card mounted at %s", SD_MOUNT_POINT);
-    (void)card;
+    s_sd_no_fat = false;
+    ESP_LOGI(TAG, "SD card mounted at %s%s", SD_MOUNT_POINT,
+             format_if_failed ? " (formatted if needed)" : "");
+    return ESP_OK;
+}
+
+static esp_err_t sdcard_mount(void)
+{
+    return sdcard_mount_ex(false);
+}
+
+esp_err_t app_sd_format_init(void)
+{
+    ESP_LOGW(TAG, "Formatting SD card; all files will be erased");
+    display_spi_claim();
+    board_spi_prepare_sd();
+    esp_err_t ret;
+    if (s_sd_card) {
+        esp_vfs_fat_mount_config_t cfg = {
+            .format_if_mount_failed = true,
+            .max_files = 5,
+            .allocation_unit_size = 16 * 1024,
+        };
+        ret = esp_vfs_fat_sdcard_format_cfg(SD_MOUNT_POINT, s_sd_card, &cfg);
+    } else {
+        ret = sdcard_mount_ex(true);
+    }
+    display_spi_release();
+    if (ret != ESP_OK) {
+        s_sd_mounted = (s_sd_card != NULL);
+        status_led_set_sd_ok(s_sd_mounted);
+        ESP_LOGE(TAG, "SD format/init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    s_sd_no_fat = false;
+    s_sd_mounted = true;
+    status_led_set_sd_ok(true);
+    sdcard_init_dirs();
+    ESP_LOGI(TAG, "SD formatted and initialized (%s, www/)", s_sd_web_root);
     return ESP_OK;
 }
 
@@ -2219,6 +2327,13 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         "<p style=\"margin-top:1rem\"><button class=\"save\" type=\"submit\">Save Wi‑Fi &amp; storage</button> <a href=\"/\">Cancel</a></p>"
         "</form>"
         "<hr style=\"border:none;border-top:1px solid #333;margin:2rem 0 1rem\">"
+        "<h2>Format SD card</h2>"
+        "<p class=\"hint\">Erases every file, writes a FAT32 filesystem, and creates the <code>files</code> and <code>www</code> folders. The device reboots when it finishes. This can take a minute.</p>"
+        "<form method=\"POST\" action=\"/format-sd\" onsubmit=\"return confirm('Erase the entire SD card? This cannot be undone.');\">"
+        "<input type=\"hidden\" name=\"confirm\" value=\"erase\">"
+        "<p><button type=\"submit\">Format &amp; initialize SD</button></p>"
+        "</form>"
+        "<hr style=\"border:none;border-top:1px solid #333;margin:2rem 0 1rem\">"
         "<p class=\"hint\">Need a restart? This does not save the form above.</p>"
         "<form method=\"POST\" action=\"/reboot\"><button type=\"submit\">Reboot device</button></form>"
         "</body></html>",
@@ -2327,6 +2442,40 @@ static esp_err_t reboot_post_handler(httpd_req_t *req)
         "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"></head><body style=\"font-family:sans-serif;margin:2rem;background:#1a1a2e;color:#eee;\">"
         "<h1>Rebooting...</h1><p>Device is restarting.</p></body></html>");
     vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
+static esp_err_t format_sd_post_handler(httpd_req_t *req)
+{
+    char body[128];
+    int received = 0;
+    if (req->content_len > 0 && req->content_len < sizeof(body)) {
+        received = httpd_req_recv(req, body, req->content_len);
+    }
+    if (received < 0) {
+        received = 0;
+    }
+    body[received] = '\0';
+    char val[16];
+    if (!parse_form_value(body, "confirm", val, sizeof(val)) || strcmp(val, "erase") != 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Format not confirmed");
+        return ESP_FAIL;
+    }
+
+    add_security_headers(req);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req,
+        "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"></head><body style=\"font-family:sans-serif;margin:2rem;background:#1a1a2e;color:#eee;\">"
+        "<h1>Formatting SD...</h1><p>Erasing the card and creating files/ and www/. The device will reboot. Keep power connected.</p></body></html>");
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    esp_err_t err = app_sd_format_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP SD format failed: %s", esp_err_to_name(err));
+        /* Browser already got the formatting page; reboot anyway so status is consistent. */
+    }
+    vTaskDelay(pdMS_TO_TICKS(400));
     esp_restart();
     return ESP_OK;
 }
@@ -2537,6 +2686,14 @@ static esp_err_t start_http_file_server(const char *base_path)
     };
     httpd_register_uri_handler(server, &reboot_uri);
 
+    httpd_uri_t format_sd_uri = {
+        .uri = "/format-sd",
+        .method = HTTP_POST,
+        .handler = format_sd_post_handler,
+        .user_ctx = NULL,
+    };
+    httpd_register_uri_handler(server, &format_sd_uri);
+
     httpd_uri_t rename_uri = {
         .uri = "/rename",
         .method = HTTP_POST,
@@ -2599,9 +2756,7 @@ void app_main(void)
     if (sd_ret != ESP_OK) {
         ESP_LOGW(TAG, "SD card not mounted. Server will run with \"No SD card\" page.");
     } else {
-        if (mkdir(s_sd_web_root, 0755) != 0 && errno != EEXIST) {
-            ESP_LOGW(TAG, "Could not create web root %s (errno %d)", s_sd_web_root, errno);
-        }
+        sdcard_init_dirs();
     }
     status_led_set_sd_ok(sd_ret == ESP_OK);
     s_sd_mounted = (sd_ret == ESP_OK);
